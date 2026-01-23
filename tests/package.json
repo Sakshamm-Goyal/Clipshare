@@ -1,0 +1,14 @@
+{
+  "name": "clipboard-sync-tests",
+  "version": "1.0.0",
+  "description": "Playwright tests for Universal Clipboard sync system",
+  "scripts": {
+    "test": "node test-runner.js",
+    "test:api": "node test-runner.js --suite api",
+    "test:ws": "node test-runner.js --suite websocket",
+    "test:e2e": "node test-runner.js --suite e2e"
+  },
+  "keywords": ["clipboard", "testing", "playwright"],
+  "author": "Saksham",
+  "license": "MIT"
+}
