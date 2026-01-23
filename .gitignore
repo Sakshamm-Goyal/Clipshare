@@ -10,7 +10,8 @@
 *.dylib
 *.dll
 *.exe
-main
+# Go binary (not Android main directory)
+/main$
 
 # IDE
 .idea/
