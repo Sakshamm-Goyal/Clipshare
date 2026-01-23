@@ -1,0 +1,71 @@
+# Build artifacts
+*.class
+*.jar
+*.war
+*.ear
+*.apk
+*.aab
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+main
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Android
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
+android-app/.idea/
+android-app/*.iml
+android-app/app/*.iml
+android-app/.externalNativeBuild/
+android-app/.cxx/
+android-app/captures/
+
+# macOS
+mac-app/.build/
+mac-app/*.xcodeproj/xcuserdata/
+mac-app/*.xcodeproj/project.xcworkspace/xcuserdata/
+mac-app/*.xcworkspace/xcuserdata/
+mac-app/DerivedData/
+mac-app/*.app/
+
+# Go
+*.test
+*.out
+vendor/
+*.mod.sum
+
+# Environment
+.env
+.env.local
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS
+Thumbs.db
+.DS_Store
