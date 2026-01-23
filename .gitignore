@@ -31,6 +31,10 @@ android-app/app/*.iml
 android-app/.externalNativeBuild/
 android-app/.cxx/
 android-app/captures/
+# But include source files
+!android-app/app/src/main/java/
+!android-app/app/src/main/res/
+!android-app/app/src/main/AndroidManifest.xml
 
 # macOS
 mac-app/.build/
