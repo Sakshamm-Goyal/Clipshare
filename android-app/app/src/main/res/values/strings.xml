@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Clipboard Sync</string>
+    <string name="start_sync">Start Sync</string>
+    <string name="stop_sync">Stop Sync</string>
+    <string name="pair_device">Pair with Mac</string>
+    <string name="status_paired">Device paired and ready</string>
+    <string name="status_not_paired">Device not paired</string>
+    <string name="status_syncing">Sync running…</string>
+    <string name="scan_qr">Scan QR code from Mac app</string>
+    <string name="pairing_success">Pairing successful!</string>
+    <string name="pairing_failed">Pairing failed. Please try again.</string>
+    <string name="sync_started">Clipboard sync started</string>
+    <string name="sync_stopped">Clipboard sync stopped</string>
+    <string name="battery_optimization">Disable Battery Optimization</string>
+    <string name="camera_permission_required">Camera permission required for QR scanning</string>
+    <string name="notification_permission_required">Notification permission required</string>
+</resources>
