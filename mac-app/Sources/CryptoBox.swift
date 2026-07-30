@@ -13,7 +13,8 @@ struct PlainItem: Codable {
     struct Payload: Codable {
         let type: String
         let size: Int
-        let text: String
+        let text: String?
+        let data: String?
     }
 
     struct Meta: Codable {
@@ -23,7 +24,10 @@ struct PlainItem: Codable {
     }
 
     var preview: String {
-        let text = payload.text
+        if payload.type.hasPrefix("image/") {
+            return "Image (\(payload.size / 1024) KB)"
+        }
+        let text = payload.text ?? ""
         if text.count > 50 {
             return String(text.prefix(47)) + "..."
         }
@@ -277,7 +281,29 @@ class CryptoBox {
             payload: PlainItem.Payload(
                 type: "text/plain",
                 size: text.utf8.count,
-                text: text
+                text: text,
+                data: nil
+            ),
+            meta: PlainItem.Meta(
+                app: "ClipShare-Mac@1.0.0",
+                network: getNetworkType(),
+                lang: Locale.current.language.languageCode?.identifier
+            )
+        )
+    }
+
+    func createPlainItem(imageData: Data, mimeType: String) -> PlainItem {
+        seq += 1
+        return PlainItem(
+            id: UUID().uuidString,
+            seq: seq,
+            tsMs: Int64(Date().timeIntervalSince1970 * 1000),
+            kind: "clipboard_item",
+            payload: PlainItem.Payload(
+                type: mimeType,
+                size: imageData.count,
+                text: nil,
+                data: imageData.base64EncodedString()
             ),
             meta: PlainItem.Meta(
                 app: "ClipShare-Mac@1.0.0",

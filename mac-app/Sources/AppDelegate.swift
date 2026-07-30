@@ -6,6 +6,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var clipboardManager: ClipboardManager?
     var cryptoBox: CryptoBox?
     var hotkeyManager: HotkeyManager?
+    var outboxStore: OutboxStore?
+    private var stagedRouteAwaitingAck: Message?
     var pairingWindowController: PairingWindowController?
     var settingsWindowController: SettingsWindowController?
 
@@ -15,6 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.clipboardManager = ClipboardManager()
         self.hotkeyManager = HotkeyManager()
         self.wsClient = WebSocketClient()
+        self.outboxStore = OutboxStore()
 
         // Initialize status bar - critical for menu bar visibility
         // Must be created synchronously on the main thread
@@ -91,16 +94,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func startClipboardSync() {
         // Start monitoring local clipboard for outgoing sync
-        clipboardManager?.startMonitoring { [weak self] text in
-            self?.sendClipboardToPeer(text)
+        clipboardManager?.startMonitoring { [weak self] content in
+            self?.sendClipboardToPeer(content)
         }
     }
 
-    func sendClipboardToPeer(_ text: String) {
-        guard let cryptoBox = cryptoBox,
-              let wsClient = wsClient,
-              wsClient.isConnected else {
-            print("✗ Cannot send: not connected")
+    func sendClipboardToPeer(_ content: LocalClipboardContent) {
+        guard let cryptoBox = cryptoBox else {
             return
         }
 
@@ -110,8 +110,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Create plain item
-        let plainItem = cryptoBox.createPlainItem(text: text)
+        let plainItem: PlainItem
+        switch content {
+        case .text(let text):
+            guard text.utf8.count <= 64 * 1024 else {
+                print("✗ Text clipboard exceeds the 64 KiB limit")
+                return
+            }
+            plainItem = cryptoBox.createPlainItem(text: text)
+        case .image(let data, let mimeType):
+            guard data.count <= 5 * 1024 * 1024 else {
+                print("✗ Image clipboard exceeds the 5 MiB limit")
+                return
+            }
+            plainItem = cryptoBox.createPlainItem(imageData: data, mimeType: mimeType)
+        }
 
         do {
             // Encrypt to envelope JSON
@@ -119,16 +132,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Create route message
             let peerDeviceID = UserDefaults.standard.string(forKey: "peerDeviceID") ?? "unknown"
-            let message: [String: Any] = [
-                "type": "route",
-                "from": getDeviceID(),
-                "to": peerDeviceID,
-                "data": envelopeJSON,
-                "qos": "at-least-once"
-            ]
+            guard peerDeviceID != "unknown" else { return }
+            let message = Message(
+                id: plainItem.id,
+                type: "route",
+                from: getDeviceID(),
+                to: peerDeviceID,
+                data: envelopeJSON,
+                qos: "at-least-once",
+                status: nil
+            )
 
-            // Send via WebSocket
-            wsClient.sendMessage(message)
+            // Persist before the socket write. The relay de-duplicates by ID,
+            // so reconnect retries are safe and no local clipboard change is lost.
+            outboxStore?.enqueue(message)
+            if wsClient?.isConnected == true {
+                wsClient?.sendMessage(message)
+            }
 
             print("→ Sent clipboard to \(peerDeviceID)")
 
@@ -170,6 +190,9 @@ extension AppDelegate: WebSocketClientDelegate {
 
         // Start bi-directional clipboard sync
         startClipboardSync()
+        for route in outboxStore?.pendingRoutes() ?? [] {
+            wsClient?.sendMessage(route)
+        }
     }
 
     func webSocketDidDisconnect(error: Error?) {
@@ -184,42 +207,62 @@ extension AppDelegate: WebSocketClientDelegate {
     }
 
     func webSocketDidReceiveMessage(_ message: Message) {
+        if message.type == "ack", let id = message.id {
+            outboxStore?.acknowledge(id)
+            return
+        }
         handleIncomingClipboard(message)
     }
 
     func handleIncomingClipboard(_ message: Message) {
-        guard let cryptoBox = cryptoBox else { return }
+        guard message.type == "route",
+              let routeID = message.id,
+              let encryptedData = message.data,
+              let cryptoBox = cryptoBox else { return }
 
         // Decrypt envelope
-        guard let plainItem = try? cryptoBox.decrypt(message.data) else {
+        guard let plainItem = try? cryptoBox.decrypt(encryptedData) else {
             print("✗ Failed to decrypt message")
             return
         }
 
+        guard plainItem.id == routeID else {
+            print("✗ Rejected route with mismatched encrypted message ID")
+            return
+        }
+
         // Mark as received to prevent echo
-        clipboardManager?.markAsReceived(plainItem.payload.text)
+        clipboardManager?.markAsReceived(plainItem)
 
         // Stage clipboard item
         clipboardManager?.stageItem(plainItem)
 
-        // Check auto-overwrite setting
-        let autoOverwrite = UserDefaults.standard.bool(forKey: "autoOverwriteClipboard")
+        // New installs sync immediately. Users can opt into staging in
+        // Settings; staged items are ACKed only after the paste action.
+        let autoOverwrite = (UserDefaults.standard.object(forKey: "autoOverwriteClipboard") as? Bool) ?? true
 
         if autoOverwrite {
-            clipboardManager?.applyStaged()
+            guard clipboardManager?.applyStaged() != nil else {
+                print("✗ Failed to apply received clipboard item")
+                return
+            }
             NotificationHelper.show(
                 title: "Clipboard Synced",
                 body: "From \(plainItem.sourceName ?? "Android"): \(plainItem.preview)"
             )
+            sendAcknowledgement(for: message)
         } else {
+            stagedRouteAwaitingAck = message
             NotificationHelper.show(
                 title: "Clipboard Ready",
                 body: "From \(plainItem.sourceName ?? "Android"): Press Option+Command+V to paste"
             )
         }
+    }
 
-        // Send ACK
-        let ack = AckMessage(id: plainItem.id, from: getDeviceID(), status: "ok")
+    private func sendAcknowledgement(for route: Message) {
+        guard let routeID = route.id else { return }
+        let ack = AckMessage(id: routeID, from: getDeviceID(), to: route.from, status: "ok")
         wsClient?.sendAck(ack)
     }
 
@@ -239,22 +282,19 @@ extension AppDelegate: HotkeyManagerDelegate {
     func hotkeyDidTriggerPaste() {
         guard let clipboardManager = clipboardManager else { return }
 
-        if let staged = clipboardManager.applyStaged() {
+        if clipboardManager.applyStaged() != nil {
+            if let route = stagedRouteAwaitingAck {
+                sendAcknowledgement(for: route)
+                stagedRouteAwaitingAck = nil
+            }
             // Check if we have Accessibility permission
             if AccessibilityHelper.hasPermission() {
                 // Write to pasteboard and simulate Cmd+V
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(staged.payload.text, forType: .string)
-
                 // Small delay to ensure paste buffer is ready
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     AccessibilityHelper.simulateCmdV()
                 }
             } else {
-                // Just write to clipboard and show instructions
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(staged.payload.text, forType: .string)
-
                 NotificationHelper.show(
                     title: "Clipboard Updated",
                     body: "Press Command+V to paste manually"

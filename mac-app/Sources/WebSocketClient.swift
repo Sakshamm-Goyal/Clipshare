@@ -1,17 +1,29 @@
 import Foundation
 
 struct Message: Codable {
+    let id: String?
     let type: String
     let from: String
     let to: String
-    let data: String // base64 encrypted envelope
+    let data: String?
     let qos: String?
+    let status: String?
 }
 
 struct AckMessage: Codable {
+    let type: String
     let id: String
     let from: String
+    let to: String
     let status: String
+
+    init(id: String, from: String, to: String, status: String) {
+        self.type = "ack"
+        self.id = id
+        self.from = from
+        self.to = to
+        self.status = status
+    }
 }
 
 class WebSocketClient: NSObject {
@@ -24,8 +36,7 @@ class WebSocketClient: NSObject {
 
     // Reconnection logic
     private var reconnectAttempts = 0
-    private let maxReconnectAttempts = 10
-    private var reconnectTimer: Timer?
+    private var reconnectWorkItem: DispatchWorkItem?
 
     override init() {
         super.init()
@@ -33,26 +44,36 @@ class WebSocketClient: NSObject {
     }
 
     func connect(url: String, token: String) {
-        guard var urlComponents = URLComponents(string: url) else {
+        guard let connectionURL = URL(string: url) else {
             print("✗ Invalid server URL")
             return
         }
 
+        shouldReconnect = true
+        reconnectWorkItem?.cancel()
+        // Re-pairing can replace a valid token while the previous socket is
+        // still alive. Tear it down before creating the replacement so one
+        // app instance never receives the same route through two identities.
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        isConnected = false
+
         // Add token as subprotocol (works better for WebSocket)
-        var request = URLRequest(url: urlComponents.url!)
+        var request = URLRequest(url: connectionURL)
         request.setValue("Bearer.\(token)", forHTTPHeaderField: "Sec-WebSocket-Protocol")
 
-        webSocketTask = urlSession.webSocketTask(with: request)
-        webSocketTask?.resume()
+        let task = urlSession.webSocketTask(with: request)
+        webSocketTask = task
+        task.resume()
 
-        receiveMessage()
+        receiveMessage(on: task)
 
         print("⟳ Connecting to \(url)...")
     }
 
     func disconnect() {
         shouldReconnect = false
-        reconnectTimer?.invalidate()
+        reconnectWorkItem?.cancel()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         isConnected = false
@@ -79,6 +100,7 @@ class WebSocketClient: NSObject {
     }
 
     func sendAck(_ ack: AckMessage) {
+        guard isConnected else { return }
         do {
             let jsonData = try JSONEncoder().encode(ack)
             let jsonString = String(data: jsonData, encoding: .utf8)!
@@ -117,9 +139,11 @@ class WebSocketClient: NSObject {
         }
     }
 
-    private func receiveMessage() {
-        webSocketTask?.receive { [weak self] result in
+    private func receiveMessage(on task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
             guard let self = self else { return }
+            // Ignore callbacks from a socket superseded by reconnect/re-pair.
+            guard self.webSocketTask === task else { return }
 
             switch result {
             case .success(let message):
@@ -135,7 +159,7 @@ class WebSocketClient: NSObject {
                 }
 
                 // Continue receiving
-                self.receiveMessage()
+                self.receiveMessage(on: task)
 
             case .failure(let error):
                 print("✗ WebSocket receive error: \(error)")
@@ -157,25 +181,25 @@ class WebSocketClient: NSObject {
         }
     }
 
-    private func handleDisconnection(error: Error) {
+    private func handleDisconnection(error: Error?) {
         isConnected = false
 
         DispatchQueue.main.async {
             self.delegate?.webSocketDidDisconnect(error: error)
         }
 
-        // Attempt reconnection with exponential backoff
-        if shouldReconnect && reconnectAttempts < maxReconnectAttempts {
-            let delay = min(pow(2.0, Double(reconnectAttempts)), 30.0) // Cap at 30 seconds
-            reconnectAttempts += 1
+        guard shouldReconnect else { return }
 
-            print("⟳ Reconnecting in \(Int(delay))s (attempt \(reconnectAttempts)/\(maxReconnectAttempts))...")
+        let delay = min(pow(2.0, Double(min(reconnectAttempts, 5))), 30.0)
+        reconnectAttempts += 1
+        print("⟳ Reconnecting in \(Int(delay))s (attempt \(reconnectAttempts))...")
 
-            reconnectTimer?.invalidate()
-            reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-                self?.attemptReconnection()
-            }
+        reconnectWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.attemptReconnection()
         }
+        reconnectWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func attemptReconnection() {
@@ -204,6 +228,7 @@ class WebSocketClient: NSObject {
 
 extension WebSocketClient: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        guard self.webSocketTask === webSocketTask else { return }
         isConnected = true
         reconnectAttempts = 0
 
@@ -213,8 +238,7 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        isConnected = false
-
+        guard self.webSocketTask === webSocketTask else { return }
         var reasonString = "Unknown"
         if let reason = reason, let str = String(data: reason, encoding: .utf8) {
             reasonString = str
@@ -222,8 +246,6 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
 
         print("✗ WebSocket closed: \(closeCode.rawValue) - \(reasonString)")
 
-        DispatchQueue.main.async {
-            self.delegate?.webSocketDidDisconnect(error: nil)
-        }
+        handleDisconnection(error: nil)
     }
 }

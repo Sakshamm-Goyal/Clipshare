@@ -115,7 +115,6 @@ class PairingWindowController: NSWindowController {
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         NSLog("→ Sending pairing request to: %@", url.absoluteString)
-        NSLog("→ Request body: %@", String(data: request.httpBody ?? Data(), encoding: .utf8) ?? "nil")
 
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else {
@@ -272,7 +271,6 @@ class PairingWindowController: NSWindowController {
                 NSLog("✓ Received WebSocket message")
                 switch message {
                 case .string(let text):
-                    NSLog("→ Message text: %@", text)
                     self.handlePairingMessage(text)
                 case .data(let data):
                     NSLog("→ Message data: %d bytes", data.count)
@@ -295,7 +293,6 @@ class PairingWindowController: NSWindowController {
 
     private func handlePairingMessage(_ text: String) {
         NSLog("=== handlePairingMessage called ===")
-        NSLog("→ Raw message: %@", text)
 
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -336,9 +333,7 @@ class PairingWindowController: NSWindowController {
                 }
                 return
             }
-            NSLog("✓ Got peer public key: %@", peerPubKey)
-
-            // Set the peer's public key for encryption
+        // Set the peer's public key for encryption
             do {
                 try self.cryptoBox.setPeerPublicKeyBase64(peerPubKey)
                 NSLog("✓ Peer public key set successfully")
@@ -497,7 +492,8 @@ class SettingsWindowController: NSWindowController {
 
     private func loadSettings() {
         serverURLField.stringValue = UserDefaults.standard.string(forKey: "serverURL") ?? "http://localhost:8080"
-        autoSyncCheckbox.state = UserDefaults.standard.bool(forKey: "autoOverwriteClipboard") ? .on : .off
+        let autoOverwrite = (UserDefaults.standard.object(forKey: "autoOverwriteClipboard") as? Bool) ?? true
+        autoSyncCheckbox.state = autoOverwrite ? .on : .off
     }
 
     @objc private func saveSettings() {
