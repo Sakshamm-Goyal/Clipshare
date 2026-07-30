@@ -3,6 +3,7 @@ package ws
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -127,22 +128,15 @@ func ServeDeviceWS(hub *Hub, authService *auth.Service, w http.ResponseWriter, r
 	}
 
 	if tokenString == "" {
-		log.Printf("Missing authentication token from %s (headers: Sec-WebSocket-Protocol=%s)",
-			getClientIP(r), r.Header.Get("Sec-WebSocket-Protocol"))
+		log.Printf("Missing authentication token from %s", getClientIP(r))
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	tokenPreview := tokenString
-	if len(tokenPreview) > 20 {
-		tokenPreview = tokenPreview[:20]
-	}
-	log.Printf("Received token from %s: %s...", getClientIP(r), tokenPreview)
-
 	// Validate token
 	claims, err := authService.ValidateToken(tokenString)
 	if err != nil {
-		log.Printf("Invalid token from %s: %v (token: %s...)", getClientIP(r), err, tokenPreview)
+		log.Printf("Invalid token from %s: %v", getClientIP(r), err)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -234,10 +228,10 @@ func ServePairingWS(hub *Hub, pairingService *pairing.Service, w http.ResponseWr
 		if existingConn == nil {
 			// This is the Mac (originator) - store and wait
 			pairingWaiters[token] = conn
-			log.Printf("✓ Stored originator connection for token: %s (total waiters: %d)", token, len(pairingWaiters))
+			log.Printf("Stored originator pairing connection (total waiters: %d)", len(pairingWaiters))
 			pairingWaitersMu.Unlock()
 
-			log.Printf("Originator (Mac) waiting for peer to scan token: %s", token)
+			log.Printf("Originator waiting for peer pairing connection")
 
 			// Keep connection alive - wait for message or close
 			// Set a long deadline for the originator
@@ -312,7 +306,7 @@ func ServePairingWS(hub *Hub, pairingService *pairing.Service, w http.ResponseWr
 		return
 	}
 
-	log.Printf("✓ Pairing tokens generated: origToken=%s..., peerToken=%s...", origToken[:20], peerToken[:20])
+	log.Printf("Pairing tokens generated for %s and %s", deviceID, peerInfo.DeviceID)
 
 	// Send success response to peer (Android)
 	peerResponse := map[string]string{
@@ -323,7 +317,6 @@ func ServePairingWS(hub *Hub, pairingService *pairing.Service, w http.ResponseWr
 		"device_pub":      devicePub, // Original device's public key (for peer/Android)
 	}
 	peerResponseJSON, _ := json.Marshal(peerResponse)
-	log.Printf("→ Sending success to peer (Android): %s", string(peerResponseJSON))
 	if err := conn.WriteMessage(websocket.TextMessage, peerResponseJSON); err != nil {
 		log.Printf("✗ Failed to send to peer: %v", err)
 	}
@@ -333,7 +326,6 @@ func ServePairingWS(hub *Hub, pairingService *pairing.Service, w http.ResponseWr
 
 	// Send success response to originator (Mac) if waiting
 	pairingWaitersMu.Lock()
-	log.Printf("→ Looking for originator connection for token: %s", token)
 	log.Printf("→ Current waiters: %d", len(pairingWaiters))
 	originatorConn := pairingWaiters[token]
 	if originatorConn != nil {
@@ -346,7 +338,6 @@ func ServePairingWS(hub *Hub, pairingService *pairing.Service, w http.ResponseWr
 			"peer_pub":        peerInfo.PublicKey, // Peer's public key (for original/Mac)
 		}
 		origResponseJSON, _ := json.Marshal(origResponse)
-		log.Printf("→ Sending to originator: %s", string(origResponseJSON))
 		if err := originatorConn.WriteMessage(websocket.TextMessage, origResponseJSON); err != nil {
 			log.Printf("✗ Failed to send to originator: %v", err)
 		} else {
@@ -368,25 +359,11 @@ func ServePairingWS(hub *Hub, pairingService *pairing.Service, w http.ResponseWr
 
 // getClientIP extracts the client IP from the request
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (for proxied requests)
-	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded != "" {
-		// Take the first IP in the list
-		parts := strings.Split(forwarded, ",")
-		return strings.TrimSpace(parts[0])
+	// Do not trust forwarded-IP headers unless a trusted reverse proxy has
+	// stripped client-supplied values first; this server has no proxy config.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
 	}
-
-	// Check X-Real-IP header
-	realIP := r.Header.Get("X-Real-IP")
-	if realIP != "" {
-		return realIP
-	}
-
-	// Fall back to RemoteAddr
-	ip := r.RemoteAddr
-	// Remove port if present
-	if colonIndex := strings.LastIndex(ip, ":"); colonIndex != -1 {
-		ip = ip[:colonIndex]
-	}
-	return ip
+	return r.RemoteAddr
 }

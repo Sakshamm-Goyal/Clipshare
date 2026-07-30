@@ -19,52 +19,42 @@ Universal Clipboard implements **device-level end-to-end encryption** ensuring t
 ## Cryptographic Primitives
 
 ### Device Identity
-- **Algorithm:** Ed25519 (signing keypair)
+- **Algorithm:** Curve25519 key-agreement keypair (X25519)
 - **Storage:**
-  - **Android:** Android Keystore (StrongBox if available)
+  - **Android:** encrypted preferences protected by an Android Keystore master key
   - **macOS:** macOS Keychain (with access control)
 - **Generation:** On first launch, persisted securely
 
 ### Key Exchange (Pairing)
-- **Protocol:** Authenticated ECDH (Curve25519)
+- **Protocol:** X25519 ECDH with the Mac public key carried in the out-of-band QR code
 - **Flow:**
   1. Mac generates ephemeral pairing token (10-minute TTL)
   2. QR contains: server URL, token, Mac's device ID & public key
   3. Android scans QR, connects to `/pair` WebSocket
-  4. Both devices perform authenticated key exchange
-  5. Derive **User Root Key (URK)** via HKDF-SHA256
+  4. Android verifies that the server response still contains the key it scanned
+  5. Both devices derive the same session key through HKDF-SHA256
   6. Server issues JWT device tokens (signed, 1-year expiry)
 
-**URK Derivation:**
-```
-shared_secret = ECDH(mac_privkey, android_pubkey)
-urk = HKDF-SHA256(
-  ikm=shared_secret,
-  salt="clipshare-urk-v1",
-  info=concat(mac_device_id, android_device_id),
-  length=32
-)
-```
-
 ### Session Keys
-- **Derivation:** From URK using HKDF with context
-- **Rotation:** Every 256 messages (or 24 hours, whichever comes first)
-- **Algorithm:** HKDF-SHA256
+- **Derivation:** X25519 ECDH output through HKDF-SHA256
+- **HKDF salt:** `ClipShare-Salt-2024`
+- **HKDF info:** `ClipShare-E2E-v1`
+- **Rotation:** not implemented in v1; re-pair to replace a session key
 
 **Session Key Derivation:**
 ```
-session_key_N = HKDF-SHA256(
-  ikm=urk,
-  salt="clipshare-session-v1",
-  info=concat(purpose="clipboard", epoch=N),
+session_key = HKDF-SHA256(
+  ikm=ECDH(mac_privkey, android_pubkey),
+  salt="ClipShare-Salt-2024",
+  info="ClipShare-E2E-v1",
   length=32
 )
 ```
 
 ### Message Encryption
-- **AEAD Cipher:** XChaCha20-Poly1305
-- **Nonce:** 192-bit random (generated per message)
-- **Associated Data:** Optional (device IDs, message type)
+- **AEAD Cipher:** IETF ChaCha20-Poly1305
+- **Nonce:** 96-bit random (generated per message)
+- **Associated Data:** empty in v1; routing metadata is server-authenticated separately
 
 **Envelope Structure:**
 ```json
@@ -72,7 +62,7 @@ session_key_N = HKDF-SHA256(
   "v": 1,
   "from": "android-abc...",
   "to": "mac-0c1c...",
-  "nonce": "24B-base64...",
+  "nonce": "12B-base64...",
   "ciphertext": "base64...",
   "ad": "optional-metadata"
 }
@@ -81,12 +71,12 @@ session_key_N = HKDF-SHA256(
 **Encryption Flow:**
 ```
 plaintext_json = JSON(clipboard_item)
-nonce = random(24)
-ciphertext = XChaCha20-Poly1305.encrypt(
+nonce = random(12)
+ciphertext = ChaCha20-Poly1305.encrypt(
   key=session_key,
   nonce=nonce,
   plaintext=plaintext_json,
-  ad=concat(from_id, to_id)
+  ad=""
 )
 ```
 
@@ -117,37 +107,35 @@ ciphertext = XChaCha20-Poly1305.encrypt(
 **Reason:** Server only has encrypted envelopes, cannot decrypt
 
 ### 2. Man-in-the-Middle (Pairing)
-**Impact:** Prevented
+**Impact:** The Android app rejects a pairing response that differs from the Mac key scanned in the QR code. A malicious relay can still deny service; signed mutual key confirmation is a future hardening item.
 **Mitigation:**
 - QR code display is out-of-band (physical proximity required)
-- Authenticated key exchange (both devices verify signatures)
+- Android pins the Mac public key obtained from the QR code
 - Short-lived pairing tokens (10 minutes)
 
 ### 3. Replay Attacks
-**Impact:** Prevented
+**Impact:** Delivery is at-least-once, so clients must tolerate duplicate routes.
 **Mitigation:**
-- Monotonic sequence numbers (`seq` field)
-- Unique message IDs (`id` field as UUID v7)
-- Clients reject old sequences
+- Redis de-duplicates a queued route ID until that route is ACKed
+- Clients verify the outer route ID matches encrypted `PlainItem.id`
 
 ### 4. Device Revocation
 **Flow:**
 1. User un-pairs device via UI
-2. App deletes local keys & JWT
-3. Server invalidates JWT (optional)
-4. Peer device stops routing to revoked device
+2. App deletes local peer credentials and keys
+3. Re-pairing establishes a new session; server-side revocation is not yet exposed as an API
 
 ## Key Storage Security
 
 ### Android
-- **KeyStore:** Hardware-backed (StrongBox on Pixel 3+, TEE on others)
-- **Access Control:** User authentication required (fingerprint/PIN)
-- **Backup:** Keys NOT backed up to cloud
+- **KeyStore:** an Android Keystore AES master key protects encrypted preferences
+- **Stored secrets:** device keypair, peer key, and device JWT
+- **Backup:** backup rules exclude the encrypted secret store and legacy key store
 
 ### macOS
 - **Keychain:** Encrypted with user's login password
 - **Access Control:** App-specific, requires keychain unlock
-- **Sandboxing:** App is sandboxed, limited keychain access
+- **Stored secrets:** device keypair, peer key, and device JWT
 
 ## Compliance Notes
 

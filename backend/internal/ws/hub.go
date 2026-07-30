@@ -2,6 +2,7 @@ package ws
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -26,26 +27,42 @@ type Hub struct {
 
 	// Store
 	db    *store.Postgres
-	redis *store.Redis
+	queue QueueStore
+}
+
+// QueueStore is the durable delivery boundary for the relay. A route remains
+// queued until its intended recipient acknowledges the message ID.
+type QueueStore interface {
+	SetDeviceOnline(deviceID string) error
+	RemoveDeviceOnline(deviceID string) error
+	EnqueueMessage(deviceID, messageID string, message []byte) error
+	PendingMessages(deviceID string) ([]string, error)
+	AcknowledgeMessage(deviceID, messageID string) error
 }
 
 // Message represents a routed message between devices
 type Message struct {
-	Type string `json:"type"` // "route", "ack", "nack"
-	From string `json:"from"`
-	To   string `json:"to"`
-	Data string `json:"data"` // base64 encrypted envelope
-	QoS  string `json:"qos,omitempty"`
+	ID     string `json:"id,omitempty"`
+	Type   string `json:"type"` // "route", "ack", "nack"
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Data   string `json:"data"` // base64 encrypted envelope
+	QoS    string `json:"qos,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 func NewHub(db *store.Postgres, redis *store.Redis) *Hub {
+	return NewHubWithQueue(db, redis)
+}
+
+func NewHubWithQueue(db *store.Postgres, queue QueueStore) *Hub {
 	return &Hub{
 		clients:    make(map[string]*Client),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		broadcast:  make(chan *Message, 256),
 		db:         db,
-		redis:      redis,
+		queue:      queue,
 	}
 }
 
@@ -61,7 +78,11 @@ func (h *Hub) Run() {
 			h.mu.Unlock()
 
 			// Mark device as online
-			h.redis.SetDeviceOnline(client.deviceID)
+			if h.queue != nil {
+				if err := h.queue.SetDeviceOnline(client.deviceID); err != nil {
+					log.Printf("Failed to mark device online: %v", err)
+				}
+			}
 			log.Printf("Device connected: %s (total: %d)", client.deviceID, len(h.clients))
 
 			// Deliver queued messages
@@ -69,14 +90,18 @@ func (h *Hub) Run() {
 
 		case client := <-h.unregister:
 			h.mu.Lock()
-			if _, ok := h.clients[client.deviceID]; ok {
+			if current, ok := h.clients[client.deviceID]; ok && current == client {
 				delete(h.clients, client.deviceID)
 				close(client.send)
 			}
 			h.mu.Unlock()
 
 			// Mark device as offline
-			h.redis.RemoveDeviceOnline(client.deviceID)
+			if h.queue != nil {
+				if err := h.queue.RemoveDeviceOnline(client.deviceID); err != nil {
+					log.Printf("Failed to mark device offline: %v", err)
+				}
+			}
 			log.Printf("Device disconnected: %s (total: %d)", client.deviceID, len(h.clients))
 
 		case message := <-h.broadcast:
@@ -93,47 +118,44 @@ func (h *Hub) Run() {
 }
 
 func (h *Hub) routeMessage(msg *Message) {
-	// Check if recipient is online
+	messageJSON, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("Failed to marshal message: %v", err)
+		return
+	}
+
+	// Persist before attempting network delivery. A successful WebSocket write is
+	// not proof that the peer processed the item.
+	if err := h.queueMessage(msg, messageJSON); err != nil {
+		log.Printf("Failed to queue message for %s: %v", msg.To, err)
+		return
+	}
+
 	h.mu.RLock()
 	client, online := h.clients[msg.To]
-	h.mu.RUnlock()
-
 	if online {
-		// Deliver immediately
-		messageJSON, err := json.Marshal(msg)
-		if err != nil {
-			log.Printf("Failed to marshal message: %v", err)
-			return
-		}
-
 		select {
 		case client.send <- messageJSON:
 			log.Printf("Message routed: %s -> %s", msg.From, msg.To)
 		default:
-			log.Printf("Client send buffer full, queueing message: %s", msg.To)
-			h.queueMessage(msg)
+			log.Printf("Client send buffer full; retained queued message for %s", msg.To)
 		}
-	} else {
-		// Queue for later delivery
-		log.Printf("Recipient offline, queueing: %s -> %s", msg.From, msg.To)
-		h.queueMessage(msg)
 	}
+	h.mu.RUnlock()
 }
 
-func (h *Hub) queueMessage(msg *Message) {
-	messageJSON, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("Failed to marshal message for queue: %v", err)
-		return
+func (h *Hub) queueMessage(msg *Message, messageJSON []byte) error {
+	if h.queue == nil {
+		return fmt.Errorf("queue unavailable")
 	}
-
-	if err := h.redis.EnqueueMessage(msg.To, messageJSON); err != nil {
-		log.Printf("Failed to queue message: %v", err)
-	}
+	return h.queue.EnqueueMessage(msg.To, msg.ID, messageJSON)
 }
 
 func (h *Hub) deliverQueuedMessages(client *Client) {
-	messages, err := h.redis.DequeueMessages(client.deviceID)
+	if h.queue == nil {
+		return
+	}
+	messages, err := h.queue.PendingMessages(client.deviceID)
 	if err != nil {
 		log.Printf("Failed to dequeue messages for %s: %v", client.deviceID, err)
 		return
@@ -144,17 +166,50 @@ func (h *Hub) deliverQueuedMessages(client *Client) {
 	}
 
 	log.Printf("Delivering %d queued messages to %s", len(messages), client.deviceID)
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if current, ok := h.clients[client.deviceID]; !ok || current != client {
+		return
+	}
 	for _, msgJSON := range messages {
 		select {
 		case client.send <- []byte(msgJSON):
 			// Delivered
 		default:
-			// Buffer full, re-queue
-			log.Printf("Client buffer full during queue delivery, re-queueing")
-			h.redis.EnqueueMessage(client.deviceID, []byte(msgJSON))
+			// The item remains queued and will be retried on the next reconnect.
+			log.Printf("Client buffer full during queue delivery; item remains queued")
 			return
 		}
 	}
+}
+
+// handleAck removes a route only after its intended recipient has confirmed
+// successful processing. It forwards the acknowledgement to the sender when
+// that sender is currently connected so local outboxes can be cleared too.
+func (h *Hub) handleAck(ack *Message) {
+	if h.queue == nil {
+		return
+	}
+	if err := h.queue.AcknowledgeMessage(ack.From, ack.ID); err != nil {
+		log.Printf("Failed to acknowledge message %s for %s: %v", ack.ID, ack.From, err)
+		return
+	}
+
+	ackJSON, err := json.Marshal(ack)
+	if err != nil {
+		log.Printf("Failed to marshal acknowledgement: %v", err)
+		return
+	}
+
+	h.mu.RLock()
+	if sender, online := h.clients[ack.To]; online {
+		select {
+		case sender.send <- ackJSON:
+		default:
+			log.Printf("Sender buffer full; acknowledgement %s can be recovered by duplicate route", ack.ID)
+		}
+	}
+	h.mu.RUnlock()
 }
 
 // GetClient returns a client by device ID

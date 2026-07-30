@@ -21,7 +21,7 @@ Timestamp: ${new Date().toISOString()}
 console.log('📋 Test Configuration:');
 console.log('   - Server URL: http://localhost:8081');
 console.log('   - PostgreSQL: localhost:5433');
-console.log('   - Redis: localhost:6380');
+console.log('   - Redis: localhost:6388');
 console.log('');
 
 console.log('⚠️  Manual Testing Required:');

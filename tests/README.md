@@ -29,7 +29,7 @@ cd backend
 go run cmd/server/main.go \
   -addr=:8081 \
   -db="postgres://clipshare:testpass123@localhost:5433/clipshare_test?sslmode=disable" \
-  -redis="localhost:6380" \
+  -redis="localhost:6388" \
   -jwt-secret="test-secret-key-for-testing-only-not-production"
 ```
 
@@ -92,7 +92,7 @@ docker-compose -f docker-compose.test.yml down -v
 
 **Backend won't start:**
 - Check PostgreSQL is running: `docker-compose -f docker-compose.test.yml ps`
-- Check ports are available: `lsof -i :8081 -i :5433 -i :6380`
+- Check ports are available: `lsof -i :8081 -i :5433 -i :6388`
 
 **Tests fail to connect:**
 - Verify backend is running: `curl http://localhost:8081/healthz`

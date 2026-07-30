@@ -46,11 +46,11 @@ type StartPairingRequest struct {
 }
 
 type StartPairingResponse struct {
-	Token      string    `json:"token"`
-	ServerURL  string    `json:"server_url"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	DeviceID   string    `json:"device_id"`
-	DevicePub  string    `json:"device_pub"`
+	Token     string    `json:"token"`
+	ServerURL string    `json:"server_url"`
+	ExpiresAt time.Time `json:"expires_at"`
+	DeviceID  string    `json:"device_id"`
+	DevicePub string    `json:"device_pub"`
 }
 
 type CompletePairingRequest struct {
@@ -80,9 +80,16 @@ func (s *Service) StartPairing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate inputs
-	if req.DeviceID == "" || req.PublicKey == "" || req.Platform == "" {
-		http.Error(w, "Missing required fields", http.StatusBadRequest)
+	if err := validateDeviceIdentity(req.DeviceID, req.PublicKey, req.Platform); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if len(req.DeviceName) > 120 {
+		http.Error(w, "device name is too long", http.StatusBadRequest)
+		return
+	}
+	if req.DeviceName == "" {
+		req.DeviceName = req.Platform
 	}
 
 	// Generate pairing token
@@ -91,7 +98,7 @@ func (s *Service) StartPairing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
-	token := base64.URLEncoding.EncodeToString(tokenBytes)
+	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
 
 	// Store token in database (10 minute expiry)
 	expiresAt := time.Now().Add(10 * time.Minute)
@@ -130,11 +137,9 @@ func (s *Service) StartPairing(w http.ResponseWriter, r *http.Request) {
 				host = localIP + ":" + port
 			}
 		}
-		// Use ws:// for local network (mobile devices on same network)
-		serverURL = "ws://" + host + "/pair"
-	} else {
-		serverURL = serverURL + "/pair"
+		serverURL = "ws://" + host
 	}
+	serverURL = pairingWebSocketURL(serverURL)
 
 	// Return pairing info
 	response := StartPairingResponse{
@@ -149,12 +154,55 @@ func (s *Service) StartPairing(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func validateDeviceIdentity(deviceID, publicKey, platform string) error {
+	if deviceID == "" || len(deviceID) > 128 || publicKey == "" {
+		return fmt.Errorf("missing or invalid device identity")
+	}
+	if platform != "macos" && platform != "android" {
+		return fmt.Errorf("unsupported platform")
+	}
+	decodedKey, err := base64.StdEncoding.DecodeString(publicKey)
+	if err != nil || len(decodedKey) != 32 {
+		return fmt.Errorf("public key must be base64-encoded X25519 data")
+	}
+	return nil
+}
+
+func pairingWebSocketURL(serverURL string) string {
+	base := strings.TrimRight(serverURL, "/")
+	base = strings.TrimSuffix(base, "/pair")
+	base = strings.TrimPrefix(base, "http://")
+	if strings.HasPrefix(serverURL, "https://") {
+		base = strings.TrimPrefix(serverURL, "https://")
+		return "wss://" + strings.TrimRight(strings.TrimSuffix(base, "/pair"), "/") + "/pair"
+	}
+	if strings.HasPrefix(serverURL, "wss://") {
+		base = strings.TrimPrefix(serverURL, "wss://")
+		return "wss://" + strings.TrimRight(strings.TrimSuffix(base, "/pair"), "/") + "/pair"
+	}
+	base = strings.TrimPrefix(base, "ws://")
+	return "ws://" + base + "/pair"
+}
+
 // CompletePairing finalizes pairing and creates user + devices (called after key exchange)
 func (s *Service) CompletePairing(token string, peerDeviceID, peerDeviceName, peerPubKey, peerPlatform string) (string, string, error) {
+	if err := validateDeviceIdentity(peerDeviceID, peerPubKey, peerPlatform); err != nil {
+		return "", "", err
+	}
+	if len(peerDeviceName) > 120 {
+		return "", "", fmt.Errorf("device name is too long")
+	}
+	if peerDeviceName == "" {
+		peerDeviceName = peerPlatform
+	}
+
 	// Get original device info from token
 	origDeviceID, origDevicePub, err := s.db.GetPairToken(token)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid or expired token: %w", err)
+	}
+	if peerDeviceID == origDeviceID {
+		return "", "", fmt.Errorf("cannot pair a device with itself")
 	}
 
 	// Get session data

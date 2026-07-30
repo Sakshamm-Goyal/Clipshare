@@ -56,29 +56,47 @@ func (r *Redis) RemoveDeviceOnline(deviceID string) error {
 	return r.client.Del(r.ctx, fmt.Sprintf("device:online:%s", deviceID)).Err()
 }
 
-// EnqueueMessage queues a message for offline device
-func (r *Redis) EnqueueMessage(deviceID string, message []byte) error {
-	key := fmt.Sprintf("device:queue:%s", deviceID)
-	// Add to list
-	if err := r.client.RPush(r.ctx, key, message).Err(); err != nil {
-		return err
-	}
-	// Set TTL to 24 hours
-	return r.client.Expire(r.ctx, key, 24*time.Hour).Err()
+// EnqueueMessage persists one encrypted route until its recipient ACKs it.
+// The Lua script makes the ID de-duplication and list insertion atomic.
+func (r *Redis) EnqueueMessage(deviceID, messageID string, message []byte) error {
+	queueKey := fmt.Sprintf("device:queue:%s", deviceID)
+	indexKey := fmt.Sprintf("device:queue:index:%s", deviceID)
+
+	const enqueueScript = `
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 1 then return 0 end
+redis.call('RPUSH', KEYS[1], ARGV[2])
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+redis.call('EXPIRE', KEYS[1], 86400)
+redis.call('EXPIRE', KEYS[2], 86400)
+return 1`
+
+	return r.client.Eval(r.ctx, enqueueScript, []string{queueKey, indexKey}, messageID, string(message)).Err()
 }
 
-// DequeueMessages retrieves all queued messages for a device
-func (r *Redis) DequeueMessages(deviceID string) ([]string, error) {
-	key := fmt.Sprintf("device:queue:%s", deviceID)
-	messages, err := r.client.LRange(r.ctx, key, 0, -1).Result()
-	if err != nil {
-		return nil, err
-	}
-	// Clear the queue
-	if len(messages) > 0 {
-		r.client.Del(r.ctx, key)
-	}
-	return messages, nil
+// PendingMessages returns durable routes without removing them. A connection
+// drop after delivery is therefore safe: the same message is retried until an
+// ACK removes it.
+func (r *Redis) PendingMessages(deviceID string) ([]string, error) {
+	return r.client.LRange(r.ctx, fmt.Sprintf("device:queue:%s", deviceID), 0, -1).Result()
+}
+
+// AcknowledgeMessage removes the exact queued route for a recipient and ID.
+func (r *Redis) AcknowledgeMessage(deviceID, messageID string) error {
+	queueKey := fmt.Sprintf("device:queue:%s", deviceID)
+	indexKey := fmt.Sprintf("device:queue:index:%s", deviceID)
+
+	const acknowledgeScript = `
+local message = redis.call('HGET', KEYS[2], ARGV[1])
+if not message then return 0 end
+redis.call('LREM', KEYS[1], 0, message)
+redis.call('HDEL', KEYS[2], ARGV[1])
+if redis.call('HLEN', KEYS[2]) == 0 then
+  redis.call('DEL', KEYS[1])
+  redis.call('DEL', KEYS[2])
+end
+return 1`
+
+	return r.client.Eval(r.ctx, acknowledgeScript, []string{queueKey, indexKey}, messageID).Err()
 }
 
 // StorePairingSession stores temporary pairing session data

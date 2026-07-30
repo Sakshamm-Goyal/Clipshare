@@ -32,7 +32,7 @@ Universal Clipboard uses a **hybrid architecture** combining WebSocket relay (MV
 
 **Responsibilities:**
 - Monitor clipboard changes via `ClipboardManager`
-- Encrypt clipboard items using Tink (XChaCha20-Poly1305)
+- Encrypt clipboard items using Tink's IETF ChaCha20-Poly1305 implementation
 - Send encrypted envelopes to server via WebSocket
 - Queue failed sends in Room database (WAL mode)
 - Run as foreground service for reliability
@@ -164,7 +164,7 @@ Plaintext:
   "meta": {"app": "android-app@0.1.0", "network": "wifi", "lang": "en"}
 }
 
-↓ Encrypt with XChaCha20-Poly1305
+↓ Encrypt with IETF ChaCha20-Poly1305
 
 Envelope:
 {
@@ -269,7 +269,7 @@ Total: ~280-340ms (typical)
 - 1-year expiry, renewable
 
 **Layer 3: Encryption (E2E)**
-- XChaCha20-Poly1305 AEAD
+- IETF ChaCha20-Poly1305 AEAD (12-byte nonce)
 - Unique nonce per message
 - Keys derived from ECDH shared secret
 

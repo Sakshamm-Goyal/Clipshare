@@ -56,6 +56,7 @@ Client/Server: Close (1000 Normal)
 **Structure:**
 ```json
 {
+  "id": "550e8400-e29b-41d4-a716-446655440000",
   "type": "route",
   "from": "android-abc123",
   "to": "mac-0c1c45f2",
@@ -65,15 +66,17 @@ Client/Server: Close (1000 Normal)
 ```
 
 **Fields:**
+- `id` (string): Globally unique route ID; it is also the encrypted `PlainItem.id`
 - `type` (string): Always `"route"`
 - `from` (string): Sender device ID (verified by server)
 - `to` (string): Recipient device ID
-- `data` (string): Base64-encoded encrypted envelope (JSON)
+- `data` (string): JSON-serialized encrypted envelope
 - `qos` (string, optional): QoS hint (`"at-least-once"`)
 
 **Server Behavior:**
-- If `to` device is online: forward immediately
-- If `to` device is offline: queue in Redis (24h TTL)
+- Persist encrypted route in Redis before attempting delivery (24h TTL)
+- Deliver immediately when `to` is online, otherwise on the next reconnect
+- Remove the route only after an authenticated ACK from `to`
 - If sender not authorized for `to`: drop + log error
 
 ---
@@ -88,7 +91,7 @@ Client/Server: Close (1000 Normal)
   "type": "ack",
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "from": "mac-0c1c45f2",
-  "seq_ack": 123,
+  "to": "android-abc123",
   "status": "ok"
 }
 ```
@@ -97,7 +100,7 @@ Client/Server: Close (1000 Normal)
 - `type` (string): Always `"ack"`
 - `id` (string): UUID of the clipboard item being acknowledged
 - `from` (string): Sender device ID (the one acknowledging)
-- `seq_ack` (int): Sequence number being acknowledged
+- `to` (string): Original sender device ID
 - `status` (string): `"ok"` or `"error"`
 
 **Sender Behavior:**
@@ -146,16 +149,16 @@ Client/Server: Close (1000 Normal)
 - `v` (int): Envelope version (currently 1)
 - `from` (string): Sender device ID
 - `to` (string): Recipient device ID
-- `nonce` (string): Base64-encoded 24-byte XChaCha20 nonce
+- `nonce` (string): Base64-encoded 12-byte IETF ChaCha20-Poly1305 nonce
 - `ciphertext` (string): Base64-encoded encrypted payload (includes Poly1305 tag)
 - `ad` (string, optional): Associated data (not encrypted, authenticated)
 
 **Encryption Algorithm:**
 ```
-XChaCha20-Poly1305 AEAD
+IETF ChaCha20-Poly1305 AEAD
 
 Key: 32-byte session key (derived from URK)
-Nonce: 24-byte random (unique per message)
+Nonce: 12-byte random (unique per message)
 Plaintext: JSON-serialized PlainItem
 Ciphertext: Encrypted plaintext + 16-byte auth tag
 ```
@@ -190,16 +193,18 @@ Ciphertext: Encrypted plaintext + 16-byte auth tag
 - `tsMs` (int64): Unix timestamp in milliseconds
 - `kind` (string): Message type (`"clipboard_item"`)
 - `payload` (object): Content object
-  - `type` (string): MIME type (`"text/plain"`, `"text/uri-list"`)
-  - `size` (int): Byte size of text
-  - `text` (string): Clipboard content
+  - `type` (string): MIME type (`"text/plain"`, `"image/png"`, `"image/jpeg"`)
+  - `size` (int): Unencoded content size in bytes
+  - `text` (string, optional): Text clipboard content
+  - `data` (string, optional): Base64 image bytes
 - `meta` (object, optional): Metadata
   - `app` (string): Sender app version
   - `network` (string): Network type (`"wifi"`, `"cellular"`)
   - `lang` (string): Language code (ISO 639-1)
 
 **Constraints:**
-- `payload.size` ≤ 65536 bytes (64 KB)
+- Text `payload.size` ≤ 65536 bytes (64 KiB)
+- Image `payload.size` ≤ 5242880 bytes (5 MiB)
 - `seq` must be monotonically increasing per sender
 - `id` must be globally unique
 
@@ -378,12 +383,10 @@ Android                     Server                     Mac (offline)
 
 ---
 
-## 8. Rate Limiting
+## 8. Pairing Rate Limiting
 
 ### Server Limits
-- **Messages per device:** 100/minute
-- **Pairing attempts:** 5/hour per IP
-- **WebSocket connections:** 5 concurrent per device ID
+- **Pairing attempts:** 10 per five minutes per source IP
 
 ### Client Backoff
 - On NACK with `RATE_LIMITED`: wait 60s before retry
@@ -392,14 +395,13 @@ Android                     Server                     Mac (offline)
 
 ## 9. Future Extensions (v2)
 
-### Rich Media Support
+### Future Rich Media Beyond Images
 ```json
 {
   "payload": {
     "type": "image/png",
     "size": 102400,
-    "url": "https://cdn.example.com/clip/abc123.png",
-    "thumb_data": "base64_thumbnail"
+    "url": "https://cdn.example.com/clip/abc123.png"
   }
 }
 ```

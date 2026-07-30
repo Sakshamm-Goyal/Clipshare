@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -18,12 +19,15 @@ import (
 
 func main() {
 	var (
-		addr      = flag.String("addr", ":8080", "HTTP service address")
+		addr      = flag.String("addr", "0.0.0.0:8080", "HTTP service address")
 		dbURL     = flag.String("db", getEnv("DATABASE_URL", "postgres://localhost/clipshare?sslmode=disable"), "PostgreSQL connection URL")
 		redisURL  = flag.String("redis", getEnv("REDIS_URL", "localhost:6379"), "Redis connection URL")
 		jwtSecret = flag.String("jwt-secret", getEnv("JWT_SECRET", "CHANGE_ME_IN_PRODUCTION"), "JWT signing secret")
 	)
 	flag.Parse()
+	if err := validateJWTSecret(*jwtSecret); err != nil {
+		log.Fatalf("Refusing to start insecure relay: %v", err)
+	}
 
 	// Initialize store
 	db, err := store.NewPostgres(*dbURL)
@@ -103,6 +107,13 @@ func main() {
 	}
 
 	log.Println("Server exited")
+}
+
+func validateJWTSecret(secret string) error {
+	if secret == "CHANGE_ME_IN_PRODUCTION" || len(secret) < 32 {
+		return fmt.Errorf("JWT_SECRET must be a unique value of at least 32 bytes")
+	}
+	return nil
 }
 
 func getEnv(key, defaultVal string) string {

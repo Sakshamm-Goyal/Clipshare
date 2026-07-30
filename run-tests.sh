@@ -103,7 +103,7 @@ fi
 
 # Check Redis
 if docker exec clipshare-redis-test redis-cli ping &> /dev/null; then
-    print_success "Redis ready on port 6380"
+    print_success "Redis ready on port 6388"
 else
     print_error "Redis not ready"
     exit 1
@@ -134,7 +134,7 @@ echo ""
 echo "Configuration:"
 echo "  - Server: http://localhost:8081"
 echo "  - Database: postgres://localhost:5433/clipshare_test"
-echo "  - Redis: localhost:6380"
+echo "  - Redis: localhost:6388"
 echo "  - JWT Secret: test-secret-key-for-testing-only"
 echo ""
 
@@ -145,7 +145,7 @@ cd "$(dirname "$0")"
 go run cmd/server/main.go \
   -addr=:8081 \
   -db="postgres://clipshare:testpass123@localhost:5433/clipshare_test?sslmode=disable" \
-  -redis="localhost:6380" \
+  -redis="localhost:6388" \
   -jwt-secret="test-secret-key-for-testing-only"
 EOF
 
@@ -164,7 +164,7 @@ echo "    cd backend"
 echo "    go run cmd/server/main.go \\"
 echo "      -addr=:8081 \\"
 echo "      -db=\"postgres://clipshare:testpass123@localhost:5433/clipshare_test?sslmode=disable\" \\"
-echo "      -redis=\"localhost:6380\" \\"
+echo "      -redis=\"localhost:6388\" \\"
 echo "      -jwt-secret=\"test-secret-key-for-testing-only\""
 echo ""
 echo "2️⃣  Verify the server is running:"

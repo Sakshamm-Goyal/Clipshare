@@ -2,11 +2,55 @@ package ws
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 )
 
+// inMemoryQueue is intentionally small: it exercises Hub delivery semantics
+// without needing a running Redis server. Redis itself is covered separately by
+// integration tests.
+type inMemoryQueue struct {
+	mu       sync.Mutex
+	byDevice map[string]map[string][]byte
+}
+
+func newInMemoryQueue() *inMemoryQueue {
+	return &inMemoryQueue{byDevice: make(map[string]map[string][]byte)}
+}
+
+func (q *inMemoryQueue) SetDeviceOnline(string) error    { return nil }
+func (q *inMemoryQueue) RemoveDeviceOnline(string) error { return nil }
+
+func (q *inMemoryQueue) EnqueueMessage(deviceID, messageID string, message []byte) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.byDevice[deviceID] == nil {
+		q.byDevice[deviceID] = make(map[string][]byte)
+	}
+	q.byDevice[deviceID][messageID] = append([]byte(nil), message...)
+	return nil
+}
+
+func (q *inMemoryQueue) PendingMessages(deviceID string) ([]string, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	messages := make([]string, 0, len(q.byDevice[deviceID]))
+	for _, message := range q.byDevice[deviceID] {
+		messages = append(messages, string(message))
+	}
+	return messages, nil
+}
+
+func (q *inMemoryQueue) AcknowledgeMessage(deviceID, messageID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	delete(q.byDevice[deviceID], messageID)
+	return nil
+}
+
 func TestMessageSerialization(t *testing.T) {
 	msg := Message{
+		ID:   "message-1",
 		Type: "route",
 		From: "device-1",
 		To:   "device-2",
@@ -30,6 +74,9 @@ func TestMessageSerialization(t *testing.T) {
 	if parsed.Type != msg.Type {
 		t.Errorf("Expected type '%s', got '%s'", msg.Type, parsed.Type)
 	}
+	if parsed.ID != msg.ID {
+		t.Errorf("Expected id '%s', got '%s'", msg.ID, parsed.ID)
+	}
 	if parsed.From != msg.From {
 		t.Errorf("Expected from '%s', got '%s'", msg.From, parsed.From)
 	}
@@ -41,6 +88,53 @@ func TestMessageSerialization(t *testing.T) {
 	}
 	if parsed.QoS != msg.QoS {
 		t.Errorf("Expected qos '%s', got '%s'", msg.QoS, parsed.QoS)
+	}
+}
+
+func TestRouteStaysDurableUntilRecipientACK(t *testing.T) {
+	queue := newInMemoryQueue()
+	hub := NewHubWithQueue(nil, queue)
+
+	recipient := &Client{deviceID: "device-2", send: make(chan []byte, 1)}
+	hub.clients[recipient.deviceID] = recipient
+
+	route := &Message{
+		ID:   "clipboard-123",
+		Type: "route",
+		From: "device-1",
+		To:   recipient.deviceID,
+		Data: "encrypted-data",
+		QoS:  "at-least-once",
+	}
+
+	hub.routeMessage(route)
+
+	if _, ok := queue.byDevice[recipient.deviceID][route.ID]; !ok {
+		t.Fatal("route must be persisted before it is delivered to an online recipient")
+	}
+
+	select {
+	case raw := <-recipient.send:
+		var delivered Message
+		if err := json.Unmarshal(raw, &delivered); err != nil {
+			t.Fatalf("decode routed message: %v", err)
+		}
+		if delivered.ID != route.ID {
+			t.Fatalf("delivered wrong message: got %q", delivered.ID)
+		}
+	default:
+		t.Fatal("online recipient did not receive route")
+	}
+
+	hub.handleAck(&Message{
+		ID:   route.ID,
+		Type: "ack",
+		From: recipient.deviceID,
+		To:   route.From,
+	})
+
+	if _, ok := queue.byDevice[recipient.deviceID][route.ID]; ok {
+		t.Fatal("route remained queued after the recipient acknowledged it")
 	}
 }
 

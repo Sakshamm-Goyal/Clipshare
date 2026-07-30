@@ -18,8 +18,9 @@ const (
 	// Send pings to peer with this period (must be less than pongWait)
 	pingPeriod = (pongWait * 9) / 10
 
-	// Maximum message size allowed from peer
-	maxMessageSize = 512 * 1024 // 512KB (should be more than 64KB for encrypted envelope overhead)
+	// Maximum encrypted route size. A 5 MiB image grows to roughly 6.7 MiB in
+	// base64, plus its AEAD tag and JSON envelope.
+	maxMessageSize = 8 * 1024 * 1024
 )
 
 // Client represents a WebSocket connection for a device
@@ -64,9 +65,29 @@ func (c *Client) readPump() {
 		// Set sender
 		msg.From = c.deviceID
 
-		// Validate message
-		if msg.To == "" || msg.Data == "" {
-			log.Printf("Invalid message from %s: missing required fields", c.deviceID)
+		if msg.Type == "ack" {
+			if msg.ID == "" || msg.To == "" {
+				log.Printf("Invalid acknowledgement from %s", c.deviceID)
+				continue
+			}
+			if msg.To == c.deviceID {
+				log.Printf("Invalid acknowledgement from %s to itself", c.deviceID)
+				continue
+			}
+			ackSender, err := c.hub.db.GetDevice(msg.To)
+			if err != nil || ackSender == nil || ackSender.UserID != c.userID {
+				log.Printf("Unauthorized acknowledgement from %s to %s", c.deviceID, msg.To)
+				continue
+			}
+			msg.Status = "ok"
+			c.hub.handleAck(&msg)
+			continue
+		}
+
+		// Validate routes. The server does not inspect encrypted payloads, but a
+		// stable message ID is required for durable at-least-once delivery.
+		if msg.Type != "route" || msg.ID == "" || msg.To == "" || msg.Data == "" {
+			log.Printf("Invalid message from %s: expected route with id, recipient, and data", c.deviceID)
 			continue
 		}
 

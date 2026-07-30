@@ -250,9 +250,9 @@ if [ $SETUP_BACKEND -eq 1 ]; then
         mkdir -p "${PROJECT_DIR}/logs"
 
         nohup go run cmd/server/main.go \
-          -addr=:8080 \
+          -addr=0.0.0.0:8080 \
           -db="postgres://clipshare:testpass123@localhost:5433/clipshare_test?sslmode=disable" \
-          -redis="localhost:6380" \
+          -redis="localhost:6388" \
           -jwt-secret="your-super-secret-jwt-key-change-in-production" \
           > "${PROJECT_DIR}/logs/backend.log" 2>&1 &
 
@@ -338,7 +338,7 @@ fi
 echo ""
 echo -e "${GREEN}${CHECK} Database Status:${NC}"
 echo -e "   PostgreSQL: localhost:5433"
-echo -e "   Redis: localhost:6380"
+echo -e "   Redis: localhost:6388"
 
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
