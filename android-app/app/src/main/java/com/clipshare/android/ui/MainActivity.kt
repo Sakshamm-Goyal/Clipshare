@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -22,6 +23,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
+    private lateinit var syncNowButton: Button
     private lateinit var pairButton: Button
     private lateinit var batteryButton: Button
 
@@ -33,12 +35,14 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.status_text)
         startButton = findViewById(R.id.start_button)
         stopButton = findViewById(R.id.stop_button)
+        syncNowButton = findViewById(R.id.sync_now_button)
         pairButton = findViewById(R.id.pair_button)
         batteryButton = findViewById(R.id.battery_button)
 
         // Setup click listeners
         startButton.setOnClickListener { startSync() }
         stopButton.setOnClickListener { stopSync() }
+        syncNowButton.setOnClickListener { syncCurrentClipboard() }
         pairButton.setOnClickListener { startPairing() }
         batteryButton.setOnClickListener { requestBatteryOptimization() }
 
@@ -63,21 +67,40 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        ensureEnabledSyncServiceIsRunning()
         updateUI()
     }
 
-    private fun updateUI() {
+    private fun ensureEnabledSyncServiceIsRunning() {
         val isPaired = PrefsHelper.isPaired(this)
-
-        if (isPaired) {
-            statusText.text = "✓ Device paired and ready"
-            startButton.isEnabled = true
-            pairButton.text = "Re-pair Device"
-        } else {
-            statusText.text = "⚠ Device not paired"
-            startButton.isEnabled = false
-            pairButton.text = "Pair with Mac"
+        val isSyncEnabled = PrefsHelper.isSyncEnabled(this)
+        val isServiceRunning = ClipboardSyncService.isRunning(this)
+        android.util.Log.d(
+            "ClipShare",
+            "Resume sync recovery paired=$isPaired enabled=$isSyncEnabled running=$isServiceRunning"
+        )
+        if (SyncStartupPolicy.shouldEnsureService(isPaired, isSyncEnabled, isServiceRunning)) {
+            ClipboardSyncService.start(this)
         }
+    }
+
+    private fun updateUI() {
+        val state = SyncUiState.from(
+            isPaired = PrefsHelper.isPaired(this),
+            isSyncEnabled = PrefsHelper.isSyncEnabled(this)
+        )
+        statusText.text = when (state.status) {
+            SyncUiState.Status.NOT_PAIRED -> "● Pair a Mac to begin"
+            SyncUiState.Status.PAUSED -> "● Mac paired — sync paused"
+            SyncUiState.Status.RUNNING -> "● Mac connected"
+        }
+        startButton.visibility = if (state.status == SyncUiState.Status.PAUSED) View.VISIBLE else View.GONE
+        syncNowButton.visibility = if (state.status == SyncUiState.Status.RUNNING) View.VISIBLE else View.GONE
+        stopButton.visibility = if (state.stopEnabled) View.VISIBLE else View.GONE
+        startButton.isEnabled = state.startEnabled
+        stopButton.isEnabled = state.stopEnabled
+        syncNowButton.isEnabled = state.sendEnabled
+        pairButton.text = if (state.isRePair) "Manage pairing" else "Pair with Mac"
     }
 
     private fun startSync() {
@@ -88,13 +111,19 @@ class MainActivity : AppCompatActivity() {
 
         ClipboardSyncService.start(this)
         Toast.makeText(this, "Clipboard sync started", Toast.LENGTH_SHORT).show()
-        statusText.text = "✓ Sync running..."
+        updateUI()
     }
 
     private fun stopSync() {
         ClipboardSyncService.stop(this)
         Toast.makeText(this, "Clipboard sync stopped", Toast.LENGTH_SHORT).show()
         updateUI()
+    }
+
+    private fun syncCurrentClipboard() {
+        if (!PrefsHelper.isPaired(this) || !PrefsHelper.isSyncEnabled(this)) return
+        ClipboardSyncService.syncCurrentClipboard(this)
+        Toast.makeText(this, "Sending current clipboard", Toast.LENGTH_SHORT).show()
     }
 
     private fun startPairing() {

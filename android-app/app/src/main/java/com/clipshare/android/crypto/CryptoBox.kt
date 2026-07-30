@@ -3,11 +3,10 @@ package com.clipshare.android.crypto
 import android.content.Context
 import android.util.Base64
 import com.clipshare.android.service.PlainItem
+import com.clipshare.android.util.SecurePrefs
 import com.google.crypto.tink.subtle.X25519
 import com.google.crypto.tink.subtle.Hkdf
-import com.google.crypto.tink.subtle.ChaCha20Poly1305
 import com.google.gson.Gson
-import java.security.SecureRandom
 
 /**
  * CryptoBox handles E2E encryption using Curve25519 ECDH + HKDF + ChaCha20-Poly1305
@@ -16,7 +15,8 @@ import java.security.SecureRandom
 class CryptoBox(private val context: Context) {
 
     private val gson = Gson()
-    private val prefs = context.getSharedPreferences("clipshare_crypto", Context.MODE_PRIVATE)
+    private val prefs = SecurePrefs.get(context)
+    private val legacyPrefs = context.getSharedPreferences("clipshare_crypto", Context.MODE_PRIVATE)
 
     // Our Curve25519 keypair
     private var privateKey: ByteArray? = null
@@ -33,7 +33,18 @@ class CryptoBox(private val context: Context) {
     private val hkdfInfo = "ClipShare-E2E-v1".toByteArray(Charsets.UTF_8)
 
     init {
+        migrateLegacySecrets()
         loadOrGenerateKeys()
+    }
+
+    private fun migrateLegacySecrets() {
+        if (prefs.getBoolean("migration_complete", false)) return
+        val editor = prefs.edit()
+        for (key in listOf("device_private_key", "device_public_key", "peer_public_key", "device_id", "peer_device_id")) {
+            legacyPrefs.getString(key, null)?.let { editor.putString(key, it) }
+        }
+        editor.putBoolean("migration_complete", true).apply()
+        legacyPrefs.edit().clear().apply()
     }
 
     /**
@@ -153,17 +164,7 @@ class CryptoBox(private val context: Context) {
         val plainJson = gson.toJson(plainItem)
         val plainBytes = plainJson.toByteArray(Charsets.UTF_8)
 
-        // Generate random 12-byte nonce
-        val nonce = ByteArray(12)
-        SecureRandom().nextBytes(nonce)
-
-        // Create ChaCha20-Poly1305 cipher with our session key
-        val chacha = ChaCha20Poly1305.create(key)
-
-        // Encrypt - ChaCha20Poly1305 expects nonce prepended to plaintext for encryption
-        // But we need to handle nonce separately to match Swift format
-        // The ciphertext from Tink includes the 16-byte auth tag at the end
-        val ciphertextWithTag = chacha.encrypt(plainBytes, nonce)
+        val encrypted = ProtocolCipher.encrypt(key, plainBytes)
 
         // Create envelope
         val deviceId = getDeviceId()
@@ -173,8 +174,8 @@ class CryptoBox(private val context: Context) {
             v = 1,
             from = deviceId,
             to = peerDeviceId,
-            nonce = Base64.encodeToString(nonce, Base64.NO_WRAP),
-            ciphertext = Base64.encodeToString(ciphertextWithTag, Base64.NO_WRAP),
+            nonce = Base64.encodeToString(encrypted.nonce, Base64.NO_WRAP),
+            ciphertext = Base64.encodeToString(encrypted.ciphertextAndTag, Base64.NO_WRAP),
             ad = null
         )
 
@@ -195,11 +196,7 @@ class CryptoBox(private val context: Context) {
         val nonce = Base64.decode(envelope.nonce, Base64.NO_WRAP)
         val ciphertextWithTag = Base64.decode(envelope.ciphertext, Base64.NO_WRAP)
 
-        // Create ChaCha20-Poly1305 cipher with our session key
-        val chacha = ChaCha20Poly1305.create(key)
-
-        // Decrypt - ciphertext includes the 16-byte auth tag
-        val plainBytes = chacha.decrypt(ciphertextWithTag, nonce)
+        val plainBytes = ProtocolCipher.decrypt(key, nonce, ciphertextWithTag)
 
         // Parse plain item
         val plainJson = String(plainBytes, Charsets.UTF_8)

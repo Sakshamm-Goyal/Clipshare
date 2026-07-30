@@ -119,7 +119,6 @@ class PairingActivity : AppCompatActivity() {
         isProcessingQR = true
 
         android.util.Log.d("ClipShare", "=== QR Code Scanned ===")
-        android.util.Log.d("ClipShare", "Raw QR data: $qrData")
 
         runOnUiThread {
             instructionText.text = "QR code detected, connecting..."
@@ -128,7 +127,6 @@ class PairingActivity : AppCompatActivity() {
         try {
             // Decode base64 JSON
             val jsonString = String(android.util.Base64.decode(qrData, android.util.Base64.DEFAULT))
-            android.util.Log.d("ClipShare", "Decoded JSON: $jsonString")
             val json = JSONObject(jsonString)
 
             val serverUrl = json.getString("server")
@@ -137,7 +135,6 @@ class PairingActivity : AppCompatActivity() {
             val macDevicePub = json.getString("device_pub")
 
             android.util.Log.d("ClipShare", "Server URL: $serverUrl")
-            android.util.Log.d("ClipShare", "Token: $token")
 
             // Set Mac's public key for encryption
             cryptoBox.setPeerPublicKey(macDevicePub)
@@ -173,9 +170,6 @@ class PairingActivity : AppCompatActivity() {
 
         // Convert server URL for WebSocket (ensure ws:// or wss://)
         var wsUrl = serverUrl
-        if (wsUrl.startsWith("wss://")) {
-            wsUrl = wsUrl.replace("wss://", "ws://") // Use ws for local dev
-        }
         if (!wsUrl.contains("?token=")) {
             wsUrl += "?token=$token&role=peer"
         } else {
@@ -234,9 +228,13 @@ class PairingActivity : AppCompatActivity() {
                         val originalDevice = response.getString("original_device")
                         val peerDevice = response.getString("peer_device")
                         val devicePub = response.optString("device_pub", macDevicePub)
+                        if (devicePub != macDevicePub) {
+                            throw SecurityException("Pairing response did not match the QR device key")
+                        }
 
-                        // Save Mac's public key for encryption
-                        cryptoBox.setPeerPublicKey(devicePub)
+                        // The public key scanned from the QR code is the
+                        // trust anchor. Never replace it with server data.
+                        cryptoBox.setPeerPublicKey(macDevicePub)
                         cryptoBox.savePairingInfo(peerDevice, originalDevice)
 
                         // Construct the WebSocket URL for normal messaging
@@ -248,6 +246,10 @@ class PairingActivity : AppCompatActivity() {
 
                         // Clear old preferences first, then save new pairing info
                         PrefsHelper.clearAll(this@PairingActivity)
+                        // Keep the ID that the relay authenticated in the JWT.
+                        // Generating a new local ID here would make incoming
+                        // routes fail the recipient check after every pairing.
+                        PrefsHelper.saveDeviceId(this@PairingActivity, peerDevice)
                         PrefsHelper.saveDeviceToken(this@PairingActivity, peerToken)
                         PrefsHelper.savePeerDeviceId(this@PairingActivity, originalDevice)
                         PrefsHelper.saveServerUrl(this@PairingActivity, messageWsUrl)

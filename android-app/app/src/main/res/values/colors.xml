@@ -7,4 +7,11 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="dawn_ink">#17253B</color>
+    <color name="dawn_muted">#536982</color>
+    <color name="dawn_sky">#EAF6FF</color>
+    <color name="dawn_mint">#14784E</color>
+    <color name="dawn_blue">#B7DBFF</color>
+    <color name="dawn_blue_stroke">#78B8F2</color>
+    <color name="dawn_paper">#FFFCF7</color>
 </resources>

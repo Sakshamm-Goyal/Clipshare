@@ -20,21 +20,18 @@ class WebSocketClient(
         .build()
 
     private var webSocket: WebSocket? = null
-    private var isConnected = false
-    private var shouldReconnect = true
+    @Volatile private var isConnected = false
+    @Volatile private var shouldReconnect = true
 
     private var reconnectAttempts = 0
-    private val maxReconnectAttempts = 10
-
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var reconnectJob: Job? = null
 
     private val gson = Gson()
 
     fun connect() {
-        android.util.Log.d("ClipShare", "=== WebSocketClient.connect() ===")
-        android.util.Log.d("ClipShare", "Server URL: $serverUrl")
-        android.util.Log.d("ClipShare", "Token (first 30 chars): ${deviceToken.take(30)}...")
+        shouldReconnect = true
+        android.util.Log.d("ClipShare", "Connecting to clipboard relay")
 
         val request = Request.Builder()
             .url(serverUrl)
@@ -50,7 +47,6 @@ class WebSocketClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                android.util.Log.d("ClipShare", "← Received message: ${text.take(100)}...")
                 onMessage(text)
             }
 
@@ -65,8 +61,11 @@ class WebSocketClient(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                android.util.Log.e("ClipShare", "✗ WebSocket FAILED: ${t.message}", t)
-                android.util.Log.e("ClipShare", "Response code: ${response?.code}, message: ${response?.message}")
+                android.util.Log.w("ClipShare", "WebSocket failed (HTTP ${response?.code ?: "n/a"}): ${t.message}")
+                if (response?.code == 401 || response?.code == 403) {
+                    // An expired or revoked token cannot recover through retry.
+                    shouldReconnect = false
+                }
                 handleDisconnection()
             }
         })
@@ -97,14 +96,14 @@ class WebSocketClient(
         isConnected = false
         onDisconnected()
 
-        if (shouldReconnect && reconnectAttempts < maxReconnectAttempts) {
+        if (shouldReconnect) {
             attemptReconnect()
         }
     }
 
     private fun attemptReconnect() {
         // Exponential backoff with jitter
-        val baseDelay = 2.0.pow(reconnectAttempts.toDouble()).toLong()
+        val baseDelay = 2.0.pow(reconnectAttempts.coerceAtMost(5).toDouble()).toLong()
         val maxDelay = 30000L // 30 seconds
         val jitter = (Math.random() * 1000).toLong()
         val delay = min(baseDelay * 1000 + jitter, maxDelay)

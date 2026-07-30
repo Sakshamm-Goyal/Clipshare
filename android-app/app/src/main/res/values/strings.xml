@@ -3,6 +3,10 @@
     <string name="app_name">Clipboard Sync</string>
     <string name="start_sync">Start Sync</string>
     <string name="stop_sync">Stop Sync</string>
+    <string name="send_current_clipboard">Send Current Clipboard</string>
+    <string name="send_to_mac">Send to Mac</string>
+    <string name="send_clipboard_shortcut">Send clipboard to Mac</string>
+    <string name="send_clipboard_tile">Send clipboard to Mac</string>
     <string name="pair_device">Pair with Mac</string>
     <string name="status_paired">Device paired and ready</string>
     <string name="status_not_paired">Device not paired</string>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="send_current_clipboard"
+        android:enabled="true"
+        android:icon="@drawable/ic_sync"
+        android:shortcutShortLabel="@string/send_clipboard_shortcut">
+        <intent android:action="com.clipshare.android.action.SEND_CURRENT_CLIPBOARD"
+            android:targetPackage="com.clipshare.android"
+            android:targetClass="com.clipshare.android.ui.SendToMacActivity" />
+    </shortcut>
+</shortcuts>
