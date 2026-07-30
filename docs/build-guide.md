@@ -128,11 +128,8 @@ swift run
 ```bash
 cd mac-app
 
-# Generate Xcode project
-swift package generate-xcodeproj
-
-# Open in Xcode
-open ClipboardMac.xcodeproj
+# Open the Swift package directly in Xcode
+open Package.swift
 ```
 
 **In Xcode:**
@@ -223,6 +220,11 @@ For physical device on same network:
 "ws://192.168.1.100:8080/ws"  // Replace with your Mac's local IP
 ```
 
+The phone must be able to reach the Mac on the same Wi-Fi network. If QR
+pairing reports an unexpected connection failure while `localhost` works on the
+Mac, allow the relay process or its chosen port through macOS Firewall before
+retrying. Do not expose a development relay directly to the public internet.
+
 ### 6. Build & Run
 
 **From Android Studio:**
@@ -248,6 +250,11 @@ adb shell am start -n com.clipshare.android/.ui.MainActivity
 On first run, grant:
 1. **Notification** permission (Android 13+)
 2. **Camera** permission (for QR scanning)
+
+Android 10+ limits background clipboard reads. Mac → Android is automatic
+while the foreground service is running. To send a clipboard item copied in
+another Android app back to the Mac, return to ClipShare and tap **Send Current
+Clipboard**.
 
 To disable battery optimization:
 1. Tap "Battery Optimization" button
