@@ -292,13 +292,13 @@ class CryptoBox {
         )
     }
 
-    func createPlainItem(imageData: Data, mimeType: String) -> PlainItem {
+    func createPlainItem(imageData: Data, mimeType: String, kind: String = "clipboard_item") -> PlainItem {
         seq += 1
         return PlainItem(
             id: UUID().uuidString,
             seq: seq,
             tsMs: Int64(Date().timeIntervalSince1970 * 1000),
-            kind: "clipboard_item",
+            kind: kind,
             payload: PlainItem.Payload(
                 type: mimeType,
                 size: imageData.count,

@@ -18,6 +18,12 @@ import (
 
 // getLocalIP returns the local IP address of the machine
 func getLocalIP() string {
+	// Prefer the default-route interface (Wi-Fi/Ethernet) over Docker/VPN bridges.
+	// UDP "dial" sends no packets; it only selects the outgoing interface.
+	if conn, err := net.Dial("udp4", "8.8.8.8:80"); err == nil {
+		defer conn.Close()
+		return conn.LocalAddr().(*net.UDPAddr).IP.String()
+	}
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return ""

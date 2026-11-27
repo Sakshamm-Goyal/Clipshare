@@ -33,6 +33,8 @@ class WebSocketClient: NSObject {
     private var urlSession: URLSession!
     private(set) var isConnected = false
     private var shouldReconnect = true
+    /// Relay rejected our token (401/403): retrying can't help, re-pair instead.
+    var onAuthRejected: (() -> Void)?
 
     // Reconnection logic
     private var reconnectAttempts = 0
@@ -163,6 +165,12 @@ class WebSocketClient: NSObject {
 
             case .failure(let error):
                 print("✗ WebSocket receive error: \(error)")
+                let status = (task.response as? HTTPURLResponse)?.statusCode
+                if status == 401 || status == 403 {
+                    print("✗ Relay rejected device token (\(status!)); re-pair required")
+                    self.shouldReconnect = false
+                    DispatchQueue.main.async { self.onAuthRejected?() }
+                }
                 self.handleDisconnection(error: error)
             }
         }

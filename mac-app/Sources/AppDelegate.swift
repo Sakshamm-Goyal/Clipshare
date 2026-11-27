@@ -27,6 +27,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar?.delegate = self
         wsClient?.delegate = self
         hotkeyManager?.delegate = self
+        wsClient?.onAuthRejected = { [weak self] in
+            guard self?.pairingWindowController?.window?.isVisible != true else { return }
+            self?.showPairingWindow()
+        }
 
         // Check if device is paired
         if let deviceToken = KeychainHelper.getDeviceToken() {
@@ -36,8 +40,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             showPairingWindow()
         }
 
-        // Register hotkey (Option+Command+V)
-        hotkeyManager?.registerPasteHotkey()
+        // ⌥⌘V paste staged item, ⌘⇧I silent screenshot → Android
+        hotkeyManager?.registerHotkeys()
+        ScreenshotSender.requestPermissionIfNeeded()
 
         // Set menu bar status
         statusBar?.setStatus(.disconnected)
@@ -58,7 +63,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func connectToServer(token: String) {
         // Get base server URL and convert to WebSocket URL
-        var serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? "http://localhost:8080"
+        var serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? "http://127.0.0.1:8080"
 
         // Convert http(s):// to ws(s)://
         if serverURL.hasPrefix("http://") {
@@ -99,7 +104,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func sendClipboardToPeer(_ content: LocalClipboardContent) {
+    func sendClipboardToPeer(_ content: LocalClipboardContent, kind: String = "clipboard_item") {
         guard let cryptoBox = cryptoBox else {
             return
         }
@@ -123,7 +128,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 print("✗ Image clipboard exceeds the 5 MiB limit")
                 return
             }
-            plainItem = cryptoBox.createPlainItem(imageData: data, mimeType: mimeType)
+            plainItem = cryptoBox.createPlainItem(imageData: data, mimeType: mimeType, kind: kind)
         }
 
         do {
@@ -310,6 +315,15 @@ extension AppDelegate: HotkeyManagerDelegate {
     }
 }
 
+extension AppDelegate {
+    func hotkeyDidTriggerScreenshot() {
+        // Deliberately silent: no sound, no thumbnail, no notification, Mac clipboard untouched.
+        ScreenshotSender.capture { [weak self] data, mimeType in
+            self?.sendClipboardToPeer(.image(data: data, mimeType: mimeType), kind: "screenshot")
+        }
+    }
+}
+
 // MARK: - PairingWindowDelegate
 
 extension AppDelegate: PairingWindowDelegate {
@@ -346,6 +360,7 @@ protocol WebSocketClientDelegate: AnyObject {
 
 protocol HotkeyManagerDelegate: AnyObject {
     func hotkeyDidTriggerPaste()
+    func hotkeyDidTriggerScreenshot()
 }
 
 protocol PairingWindowDelegate: AnyObject {

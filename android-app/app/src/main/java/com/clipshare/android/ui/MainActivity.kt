@@ -82,6 +82,10 @@ class MainActivity : AppCompatActivity() {
         if (SyncStartupPolicy.shouldEnsureService(isPaired, isSyncEnabled, isServiceRunning)) {
             ClipboardSyncService.start(this)
         }
+        if (isPaired && isSyncEnabled && !askedBatteryThisProcess) {
+            askedBatteryThisProcess = true
+            requestBatteryExemption()
+        }
     }
 
     private fun updateUI() {
@@ -103,6 +107,17 @@ class MainActivity : AppCompatActivity() {
         pairButton.text = if (state.isRePair) "Manage pairing" else "Pair with Mac"
     }
 
+    private companion object { var askedBatteryThisProcess = false }
+
+    /** Without this, Doze/OEM battery savers kill the socket and Mac → Android stalls. */
+    private fun requestBatteryExemption() {
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        runCatching {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        }
+    }
+
     private fun startSync() {
         if (!PrefsHelper.isPaired(this)) {
             Toast.makeText(this, "Please pair device first", Toast.LENGTH_SHORT).show()
@@ -110,6 +125,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         ClipboardSyncService.start(this)
+        requestBatteryExemption()
         Toast.makeText(this, "Clipboard sync started", Toast.LENGTH_SHORT).show()
         updateUI()
     }

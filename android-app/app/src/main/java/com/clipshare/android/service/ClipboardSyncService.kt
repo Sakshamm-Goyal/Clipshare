@@ -9,7 +9,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.ContentValues
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -83,9 +87,7 @@ class ClipboardSyncService : Service() {
                     showToast("Clipboard sync connected")
                     serviceScope.launch { processOutbox() }
                 },
-                onDisconnected = {
-                    updateNotification(connected = false)
-                }
+                onDisconnected = { onRelayLost() }
             )
         }
     }
@@ -156,13 +158,30 @@ class ClipboardSyncService : Service() {
                 showToast("Clipboard sync connected")
                 serviceScope.launch { processOutbox() }
             },
-            onDisconnected = {
-                updateNotification(connected = false)
-            }
+            onDisconnected = { onRelayLost() }
         )
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private var lastDiscoveryMs = 0L
+
+    /** Mac's Wi-Fi IP may have changed: look it up over Bonjour and reconnect there. */
+    private fun onRelayLost() {
+        updateNotification(connected = false)
+        val now = System.currentTimeMillis()
+        if (now - lastDiscoveryMs < 30_000) return
+        lastDiscoveryMs = now
+        RelayDiscovery.find(this) { url ->
+            if (url == PrefsHelper.getServerUrl(this)) return@find
+            android.util.Log.i("ClipShare", "Relay moved, reconnecting to $url")
+            PrefsHelper.saveServerUrl(this, url)
+            mainHandler.post {
+                initializeWebSocketClient()
+                if (::wsClient.isInitialized) wsClient.connect()
+            }
+        }
+    }
 
     override fun onDestroy() {
         super.onDestroy()
@@ -320,6 +339,8 @@ class ClipboardSyncService : Service() {
             }
             lastReceivedTime = System.currentTimeMillis()
             val preview = clipboardPreview(plainItem)
+            val isScreenshot = plainItem.kind == "screenshot"
+            if (isScreenshot) saveToGallery(plainItem)
 
             // Check auto-overwrite preference
             val autoOverwrite = PrefsHelper.isAutoOverwrite(this)
@@ -327,7 +348,7 @@ class ClipboardSyncService : Service() {
             if (autoOverwrite) {
                 mainHandler.post {
                     if (writeToClipboard(plainItem)) {
-                        showToast("Clipboard synced: $preview")
+                        if (!isScreenshot) showToast("Clipboard synced: $preview")
                         sendAck(routeID, routeMessage.from)
                     } else {
                         showToast("Failed to apply clipboard item")
@@ -378,6 +399,23 @@ class ClipboardSyncService : Service() {
         }
         if (applied) lastClipboardFingerprint = lastReceivedFingerprint
         return applied
+    }
+
+    /** Mac ⌘⇧I screenshots land in Pictures/ClipShare (and the clipboard). */
+    private fun saveToGallery(item: PlainItem) {
+        // ponytail: Android 8–9 would need WRITE_EXTERNAL_STORAGE; there it's clipboard-only.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        val bytes = android.util.Base64.decode(item.payload.data ?: return, android.util.Base64.NO_WRAP)
+        val ext = if (item.payload.type == "image/jpeg") "jpg" else "png"
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "Mac-Screenshot-${item.tsMs}.$ext")
+            put(MediaStore.Images.Media.MIME_TYPE, item.payload.type)
+            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/ClipShare")
+        }
+        runCatching {
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+        }.onFailure { android.util.Log.w("ClipShare", "Gallery save failed", it) }
     }
 
     private fun clipboardPreview(item: PlainItem): String = when {

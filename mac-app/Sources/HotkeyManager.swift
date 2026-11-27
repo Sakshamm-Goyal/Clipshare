@@ -5,34 +5,43 @@ class HotkeyManager {
     weak var delegate: HotkeyManagerDelegate?
 
     private var eventHandler: EventHandlerRef?
-    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyRefs: [EventHotKeyRef] = []
 
-    func registerPasteHotkey() {
-        // Register ⌥⌘V (Option+Command+V)
-        let keyCode: UInt32 = 9 // V key
-        let modifiers: UInt32 = UInt32(optionKey | cmdKey)
+    private static let pasteID: UInt32 = 1
+    private static let screenshotID: UInt32 = 2
 
+    /// Registers ⌥⌘V (paste staged item) and ⌘⇧I (silent screenshot → Android).
+    func registerHotkeys() {
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
 
-        InstallEventHandler(GetApplicationEventTarget(), { (nextHandler, event, userData) -> OSStatus in
-            guard let userData = userData else { return OSStatus(eventNotHandledErr) }
-
+        InstallEventHandler(GetApplicationEventTarget(), { (_, event, userData) -> OSStatus in
+            guard let event = event, let userData = userData else { return OSStatus(eventNotHandledErr) }
+            var hotKeyID = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                              nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
             let manager = Unmanaged<HotkeyManager>.fromOpaque(userData).takeUnretainedValue()
-            manager.delegate?.hotkeyDidTriggerPaste()
-
+            switch hotKeyID.id {
+            case HotkeyManager.pasteID: manager.delegate?.hotkeyDidTriggerPaste()
+            case HotkeyManager.screenshotID: manager.delegate?.hotkeyDidTriggerScreenshot()
+            default: return OSStatus(eventNotHandledErr)
+            }
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
 
-        var hotKeyID = EventHotKeyID(signature: OSType(0x4141), id: 1)
-        RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+        register(keyCode: 9, modifiers: UInt32(optionKey | cmdKey), id: Self.pasteID)          // V
+        register(keyCode: 34, modifiers: UInt32(shiftKey | cmdKey), id: Self.screenshotID)     // I
+        print("✓ Registered hotkeys: ⌥⌘V (paste), ⌘⇧I (screenshot → Android)")
+    }
 
-        print("✓ Registered hotkey: ⌥⌘V")
+    private func register(keyCode: UInt32, modifiers: UInt32, id: UInt32) {
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(keyCode, modifiers, EventHotKeyID(signature: OSType(0x4141), id: id),
+                                         GetApplicationEventTarget(), 0, &ref)
+        if status == noErr, let ref = ref { hotKeyRefs.append(ref) } else { print("✗ Hotkey \(id) taken (\(status))") }
     }
 
     deinit {
-        if let hotKeyRef = hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-        }
+        hotKeyRefs.forEach { UnregisterEventHotKey($0) }
         if let eventHandler = eventHandler {
             RemoveEventHandler(eventHandler)
         }

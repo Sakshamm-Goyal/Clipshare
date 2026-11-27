@@ -6,6 +6,11 @@ import Security
 enum KeychainHelper {
     private static let service = "com.clipshare.desktop"
     private static let legacyPrefix = "com.clipshare."
+    // Read each secret from the Keychain at most once per launch. Every
+    // SecItemCopyMatching can raise a macOS password prompt for a rebuilt
+    // (re-signed) binary, so reconnect loops must never hit the Keychain.
+    private static var cache: [String: Data?] = [:]
+    private static let lock = NSLock()
 
     static func saveDeviceToken(_ token: String) {
         save(Data(token.utf8), account: "deviceToken")
@@ -30,6 +35,7 @@ enum KeychainHelper {
 
     private static func save(_ data: Data, account: String) {
         delete(account: account)
+        lock.withLock { cache[account] = data }
         let attributes: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -42,6 +48,13 @@ enum KeychainHelper {
     }
 
     private static func get(account: String) -> Data? {
+        if let cached = lock.withLock({ cache[account] }) { return cached }
+        let value = fetch(account: account)
+        lock.withLock { cache[account] = value }
+        return value
+    }
+
+    private static func fetch(account: String) -> Data? {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -65,6 +78,7 @@ enum KeychainHelper {
     }
 
     private static func delete(account: String) {
+        lock.withLock { cache[account] = .some(nil) }
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
