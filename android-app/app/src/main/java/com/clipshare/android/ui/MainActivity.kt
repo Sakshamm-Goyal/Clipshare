@@ -107,8 +107,6 @@ class MainActivity : AppCompatActivity() {
         pairButton.text = if (state.isRePair) "Manage pairing" else "Pair with Mac"
     }
 
-    private companion object { var askedBatteryThisProcess = false }
-
     /** Without this, Doze/OEM battery savers kill the socket and Mac → Android stalls. */
     private fun requestBatteryExemption() {
         val pm = getSystemService(android.os.PowerManager::class.java)
@@ -193,6 +191,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private var askedBatteryThisProcess = false
         private const val REQUEST_CAMERA_PERMISSION = 100
         private const val REQUEST_NOTIFICATION_PERMISSION = 101
     }
