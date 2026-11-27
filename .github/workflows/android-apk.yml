@@ -21,9 +21,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.12'
-      # Fixed debug key (committed, public "android" password) so each new APK
-      # installs over the previous one instead of failing on a signature mismatch.
-      - run: mkdir -p ~/.android && cp debug.keystore ~/.android/debug.keystore
       - run: gradle assembleDebug testDebugUnitTest --no-daemon
       - uses: actions/upload-artifact@v4
         with:
