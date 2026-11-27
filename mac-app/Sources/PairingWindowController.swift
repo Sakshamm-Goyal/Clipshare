@@ -76,9 +76,9 @@ class PairingWindowController: NSWindowController {
         NSLog("=== startPairing() called ===")
         cryptoBox = CryptoBox()
 
-        // Generate device ID
-        let shortID = UUID().uuidString.prefix(12)
-        deviceID = "mac-\(shortID)"
+        // Keep one identity per Mac. Minting a new ID per window let an older
+        // window finish pairing under an ID the app no longer used.
+        deviceID = UserDefaults.standard.string(forKey: "deviceID") ?? "mac-\(UUID().uuidString.prefix(12))"
 
         guard let publicKeyBase64 = cryptoBox.getPublicKeyBase64() else {
             updateStatus("Failed to generate keys", isError: true)

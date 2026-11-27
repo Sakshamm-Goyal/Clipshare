@@ -9,6 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var outboxStore: OutboxStore?
     private var stagedRouteAwaitingAck: Message?
     var pairingWindowController: PairingWindowController?
+    private let usr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
     var settingsWindowController: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -27,10 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar?.delegate = self
         wsClient?.delegate = self
         hotkeyManager?.delegate = self
-        wsClient?.onAuthRejected = { [weak self] in
-            guard self?.pairingWindowController?.window?.isVisible != true else { return }
-            self?.showPairingWindow()
-        }
+        wsClient?.onAuthRejected = { [weak self] in self?.showPairingWindow() }
 
         // Check if device is paired
         if let deviceToken = KeychainHelper.getDeviceToken() {
@@ -42,7 +40,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // ⌥⌘V paste staged item, ⌘⇧I silent screenshot → Android
         hotkeyManager?.registerHotkeys()
-        ScreenshotSender.requestPermissionIfNeeded()
+        // `kill -USR1 <pid>` = same as ⌘⇧I (scripting / testing without a keypress).
+        signal(SIGUSR1, SIG_IGN)
+        usr1Source.setEventHandler { [weak self] in self?.hotkeyDidTriggerScreenshot() }
+        usr1Source.resume()
 
         // Set menu bar status
         statusBar?.setStatus(.disconnected)
@@ -88,6 +89,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showPairingWindow() {
+        if let window = pairingWindowController?.window, window.isVisible {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
         pairingWindowController = PairingWindowController()
         pairingWindowController?.delegate = self
         pairingWindowController?.showWindow(nil)
@@ -330,6 +336,8 @@ extension AppDelegate: PairingWindowDelegate {
     func pairingDidComplete(deviceToken: String, peerDeviceID: String) {
         KeychainHelper.saveDeviceToken(deviceToken)
         UserDefaults.standard.set(peerDeviceID, forKey: "peerDeviceID")
+        // Queued routes were encrypted for the previous peer and can never be ACKed.
+        outboxStore?.removeAll()
 
         // Reload crypto keys to pick up the peer public key saved during pairing
         cryptoBox?.loadKeys()

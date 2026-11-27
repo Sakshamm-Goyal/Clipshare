@@ -1,38 +1,49 @@
 import Cocoa
+import ScreenCaptureKit
 
 /// Silent screenshot of the display under the mouse, sized to fit the 5 MiB relay limit.
+/// Captured in-process with ScreenCaptureKit so macOS checks ClipboardMac's own Screen
+/// Recording grant (a spawned /usr/sbin/screencapture isn't covered by it on macOS 15+).
 enum ScreenshotSender {
     static let maxBytes = 5 * 1024 * 1024
-
-    static func requestPermissionIfNeeded() {
-        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
-    }
+    private static var askedThisLaunch = false
 
     static func capture(completion: @escaping (Data, String) -> Void) {
-        guard CGPreflightScreenCaptureAccess() else {
-            // Without Screen Recording access macOS returns only the wallpaper.
-            print("✗ Screenshot needs Screen Recording permission")
-            CGRequestScreenCaptureAccess()
-            return
-        }
-        let display = displayUnderMouse()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("clipshare-\(UUID().uuidString).png")
-            defer { try? FileManager.default.removeItem(at: url) }
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        let displayID = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        let scale = screen?.backingScaleFactor ?? 2
 
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            task.arguments = ["-x", "-D", String(display), "-t", "png", url.path]  // -x: no shutter sound
-            do { try task.run() } catch { print("✗ screencapture failed: \(error)"); return }
-            task.waitUntilExit()
+        Task.detached(priority: .userInitiated) {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                guard let display = content.displays.first(where: { $0.displayID == displayID }) ?? content.displays.first else {
+                    print("✗ Screenshot: no display found")
+                    return
+                }
+                let config = SCStreamConfiguration()
+                config.width = Int(CGFloat(display.width) * scale)
+                config.height = Int(CGFloat(display.height) * scale)
+                config.showsCursor = false
+                let image = try await SCScreenshotManager.captureImage(
+                    contentFilter: SCContentFilter(display: display, excludingWindows: []),
+                    configuration: config)
 
-            guard let png = try? Data(contentsOf: url), let (data, mime) = fit(png) else {
-                print("✗ Screenshot capture failed")
-                return
-            }
-            DispatchQueue.main.async {
-                completion(data, mime)
-                print("→ Screenshot \(data.count / 1024) KB (\(mime)) queued for Android")
+                guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]),
+                      let (data, mime) = fit(png) else {
+                    print("✗ Screenshot encode failed")
+                    return
+                }
+                await MainActor.run {
+                    completion(data, mime)
+                    print("→ Screenshot \(data.count / 1024) KB (\(mime)) queued for Android")
+                }
+            } catch {
+                print("✗ Screenshot failed: \(error.localizedDescription) — allow ClipboardMac in Screen Recording")
+                await MainActor.run {
+                    // Ask once per launch, not on every press.
+                    if !askedThisLaunch { askedThisLaunch = true; _ = CGRequestScreenCaptureAccess() }
+                }
             }
         }
     }
@@ -61,12 +72,5 @@ enum ScreenshotSender {
         ctx.interpolationQuality = .high
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
         return ctx.makeImage().map { NSBitmapImageRep(cgImage: $0) }
-    }
-
-    /// screencapture -D is 1-based in NSScreen.screens order (1 = main).
-    private static func displayUnderMouse() -> Int {
-        let mouse = NSEvent.mouseLocation
-        let index = NSScreen.screens.firstIndex { NSMouseInRect(mouse, $0.frame, false) } ?? 0
-        return index + 1
     }
 }

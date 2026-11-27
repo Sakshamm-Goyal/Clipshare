@@ -36,16 +36,41 @@ if [[ ! -s "$SUPPORT/jwt_secret" ]]; then
   (umask 077; openssl rand -hex 32 > "$SUPPORT/jwt_secret")
 fi
 
+# Replacing a binary changes its ad-hoc signature, which silently voids the
+# firewall rule, Keychain "Always Allow" and Screen Recording grant. So build
+# reproducibly and only swap binaries whose bytes actually changed.
 echo "→ Building relay"
-(cd "$ROOT/backend" && go build -o "$SUPPORT/clipshare-server" ./cmd/server)
+RELAY="$SUPPORT/clipshare-server"
+(cd "$ROOT/backend" && go build -trimpath -buildvcs=false -o "$RELAY.new" ./cmd/server)
+RELAY_CHANGED=0
+if cmp -s "$RELAY.new" "$RELAY"; then rm "$RELAY.new"; else mv "$RELAY.new" "$RELAY"; RELAY_CHANGED=1; fi
+
+# A background relay never gets the "Allow incoming connections?" popup, so
+# with the macOS firewall on the phone's connections are silently reset.
+FW=/usr/libexec/ApplicationFirewall/socketfilterfw
+if "$FW" --getglobalstate | grep -q enabled && { [[ $RELAY_CHANGED == 1 ]] || ! "$FW" --listapps | grep -qF "$RELAY"; }; then
+  echo "→ Allowing relay through macOS firewall (asks for your Mac password)"
+  { sudo "$FW" --remove "$RELAY" >/dev/null 2>&1; sudo "$FW" --add "$RELAY" && sudo "$FW" --unblockapp "$RELAY"; } >/dev/null \
+    || echo "✗ Firewall still blocks the relay; phone can't connect until it's allowed"
+fi
 
 echo "→ Building Mac app"
 (cd "$ROOT/mac-app" && swift build -c release >/dev/null)
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-cp "$ROOT/mac-app/ClipboardMac.app/Contents/Info.plist" "$APP/Contents/"
-cp "$ROOT/mac-app/.build/release/ClipboardMac" "$APP/Contents/MacOS/"
-codesign --force --sign - --identifier com.clipshare.mac "$APP" >/dev/null 2>&1
+BUILT="$ROOT/mac-app/.build/release/ClipboardMac"
+if [[ -x "$APP/Contents/MacOS/ClipboardMac" ]] && [[ "$(shasum -a 256 < "$BUILT")" == "$(cat "$SUPPORT/mac-app.sha256" 2>/dev/null)" ]]; then
+  echo "  (unchanged, keeping signed app so permissions stay granted)"
+else
+  rm -rf "$APP"
+  mkdir -p "$APP/Contents/MacOS"
+  cp "$ROOT/mac-app/Info.plist" "$APP/Contents/"
+  cp "$BUILT" "$APP/Contents/MacOS/"
+  # A stable local cert keeps Screen Recording + Keychain grants across rebuilds;
+  # ad-hoc signatures are per-build hashes, so macOS treats each build as a new app.
+  SIGN_ID=$(security find-identity -p codesigning 2>/dev/null | awk '/"ClipShare Local Signing"/ {print $2; exit}')
+  codesign --force --sign "${SIGN_ID:--}" --identifier com.clipshare.mac "$APP"
+  shasum -a 256 < "$BUILT" > "$SUPPORT/mac-app.sha256"
+  echo "  (new build: re-allow Screen Recording; Keychain may ask once → Always Allow)"
+fi
 # Relay runs on this Mac, so loopback never breaks when Wi-Fi changes.
 defaults write com.clipshare.mac serverURL "http://127.0.0.1:8080"
 
@@ -76,7 +101,10 @@ agent com.clipshare.relay '<true/>' /bin/sh -c \
   "JWT_SECRET=\"\$(cat '$SUPPORT/jwt_secret')\" exec '$SUPPORT/clipshare-server' -db 'postgres://$(whoami)@localhost/clipshare?sslmode=disable'"
 agent com.clipshare.bonjour '<true/>' /usr/bin/dns-sd -R ClipShare _clipshare._tcp local 8080
 # Quit from the menu (exit 0) stays quit; crashes restart.
-agent com.clipshare.mac '<dict><key>SuccessfulExit</key><false/></dict>' "$APP/Contents/MacOS/ClipboardMac"
+# Launch through LaunchServices (`open`), not the raw binary: TCC only matches the
+# app's Screen Recording grant to a LaunchServices-launched bundle.
+agent com.clipshare.mac '<dict><key>SuccessfulExit</key><false/></dict>' \
+  /usr/bin/open -W -a "$APP" --stdout "$LOGS/com.clipshare.mac.log" --stderr "$LOGS/com.clipshare.mac.log"
 
 for _ in {1..20}; do curl -fs http://127.0.0.1:8080/healthz >/dev/null && break; sleep 0.5; done
 curl -fs http://127.0.0.1:8080/healthz >/dev/null && echo "✓ Relay healthy on :8080" || echo "✗ Relay not healthy, see $LOGS/com.clipshare.relay.log"

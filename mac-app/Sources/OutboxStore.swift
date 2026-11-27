@@ -25,6 +25,11 @@ final class OutboxStore {
         persist()
     }
 
+    func removeAll() {
+        routes.removeAll()
+        persist()
+    }
+
     func pendingRoutes() -> [Message] {
         routes.values.sorted { ($0.id ?? "") < ($1.id ?? "") }
     }

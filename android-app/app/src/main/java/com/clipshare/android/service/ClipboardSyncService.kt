@@ -114,8 +114,9 @@ class ClipboardSyncService : Service() {
             ACTION_SEND_IMAGE -> readSharedImage(intent)?.let(::handleClipboardChange)
         }
 
-        // Re-initialize WebSocket client with current credentials
-        // This handles the case where pairing just completed
+        // Re-load keys + credentials: pairing writes them from another
+        // component, and a stale peer key makes every incoming item fail to decrypt.
+        cryptoBox = CryptoBox(this)
         initializeWebSocketClient()
 
         // Connect WebSocket
@@ -311,6 +312,7 @@ class ClipboardSyncService : Service() {
             val plainItem = try {
                 cryptoBox.decrypt(encryptedData)
             } catch (e: Exception) {
+                android.util.Log.w("ClipShare", "Decrypt failed (stale pairing keys?)", e)
                 showToast("Failed to decrypt message")
                 return
             }
@@ -367,7 +369,7 @@ class ClipboardSyncService : Service() {
             }
 
         } catch (e: Exception) {
-            // Not a valid message format, ignore
+            android.util.Log.w("ClipShare", "Dropped incoming message", e)
         }
     }
 
