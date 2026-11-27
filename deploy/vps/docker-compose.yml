@@ -1,0 +1,22 @@
+# ClipShare relay for a shared VPS: nothing published except 127.0.0.1:8090 (nginx proxies TLS to it).
+name: clipshare
+services:
+  db:
+    image: postgres:16-alpine
+    environment: {POSTGRES_USER: clipshare, POSTGRES_PASSWORD: clipshare, POSTGRES_DB: clipshare}  # internal network only
+    volumes: [db:/var/lib/postgresql/data]
+    healthcheck: {test: ["CMD", "pg_isready", "-U", "clipshare"], interval: 3s, retries: 20}
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+  relay:
+    image: alpine:3.20
+    command: ["/relay", "-db", "postgres://clipshare:clipshare@db/clipshare?sslmode=disable", "-redis", "redis:6379"]
+    volumes: ["./clipshare-server:/relay:ro"]
+    env_file: .env  # JWT_SECRET, SERVER_URL (mode 600, created by tools/deploy-vps.sh)
+    ports: ["127.0.0.1:8090:8080"]
+    depends_on: {db: {condition: service_healthy}, redis: {condition: service_started}}
+    restart: unless-stopped
+volumes:
+  db:

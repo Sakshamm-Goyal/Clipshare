@@ -170,6 +170,8 @@ class ClipboardSyncService : Service() {
     /** Mac's Wi-Fi IP may have changed: look it up over Bonjour and reconnect there. */
     private fun onRelayLost() {
         updateNotification(connected = false)
+        // Remote (wss://) relay has a fixed address; Bonjour would only find a stale LAN relay.
+        if (PrefsHelper.getServerUrl(this).startsWith("wss://")) return
         val now = System.currentTimeMillis()
         if (now - lastDiscoveryMs < 30_000) return
         lastDiscoveryMs = now

@@ -78,3 +78,4 @@ Thumbs.db
 # Local build/runtime artifacts
 backend/clipshare-server
 backend.pid
+deploy/vps/clipshare-server

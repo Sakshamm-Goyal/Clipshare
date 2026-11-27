@@ -5,6 +5,8 @@
 #   - Bonjour ad   (so Android finds a new IP)   com.clipshare.bonjour
 #   - menu bar app (launchd, restarts on crash)  com.clipshare.mac
 # Re-run any time to rebuild and reload. Uninstall: tools/install-mac-background.sh --uninstall
+# Remote relay (works from any network, see tools/deploy-vps.sh):
+#   CLIPSHARE_SERVER=https://host tools/install-mac-background.sh   (CLIPSHARE_SERVER=local to go back)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,6 +27,14 @@ if [[ "${1:-}" == "--uninstall" ]]; then
 fi
 
 mkdir -p "$SUPPORT" "$LOGS" "$AGENTS" "$HOME/Applications"
+
+# Remembered across re-runs; "local" = relay on this Mac (same Wi-Fi only).
+[[ -n "${CLIPSHARE_SERVER:-}" ]] && echo "$CLIPSHARE_SERVER" > "$SUPPORT/server_url"
+SERVER=$(cat "$SUPPORT/server_url" 2>/dev/null || echo local)
+if [[ "$SERVER" != local ]]; then
+  rm -f "$AGENTS/com.clipshare.relay.plist" "$AGENTS/com.clipshare.bonjour.plist"
+  echo "→ Using remote relay $SERVER (local relay off)"
+else
 
 echo "→ Postgres + Redis"
 brew services start postgresql@16 >/dev/null
@@ -53,6 +63,7 @@ if "$FW" --getglobalstate | grep -q enabled && { [[ $RELAY_CHANGED == 1 ]] || ! 
   { sudo "$FW" --remove "$RELAY" >/dev/null 2>&1; sudo "$FW" --add "$RELAY" && sudo "$FW" --unblockapp "$RELAY"; } >/dev/null \
     || echo "✗ Firewall still blocks the relay; phone can't connect until it's allowed"
 fi
+fi # local relay
 
 echo "→ Building Mac app"
 (cd "$ROOT/mac-app" && swift build -c release >/dev/null)
@@ -71,8 +82,9 @@ else
   shasum -a 256 < "$BUILT" > "$SUPPORT/mac-app.sha256"
   echo "  (new build: re-allow Screen Recording; Keychain may ask once → Always Allow)"
 fi
-# Relay runs on this Mac, so loopback never breaks when Wi-Fi changes.
-defaults write com.clipshare.mac serverURL "http://127.0.0.1:8080"
+# Local relay: loopback never breaks when Wi-Fi changes.
+[[ "$SERVER" == local ]] && URL="http://127.0.0.1:8080" || URL="$SERVER"
+defaults write com.clipshare.mac serverURL "$URL"
 
 agent() { # label, keepalive-xml, program args...
   local label=$1 keep=$2; shift 2
@@ -97,16 +109,18 @@ agent() { # label, keepalive-xml, program args...
 
 echo "→ Loading launch agents"
 # Secret is read from a 600 file at start, never written into the plist.
+if [[ "$SERVER" == local ]]; then
 agent com.clipshare.relay '<true/>' /bin/sh -c \
   "JWT_SECRET=\"\$(cat '$SUPPORT/jwt_secret')\" exec '$SUPPORT/clipshare-server' -db 'postgres://$(whoami)@localhost/clipshare?sslmode=disable'"
 agent com.clipshare.bonjour '<true/>' /usr/bin/dns-sd -R ClipShare _clipshare._tcp local 8080
+fi
 # Quit from the menu (exit 0) stays quit; crashes restart.
 # Launch through LaunchServices (`open`), not the raw binary: TCC only matches the
 # app's Screen Recording grant to a LaunchServices-launched bundle.
 agent com.clipshare.mac '<dict><key>SuccessfulExit</key><false/></dict>' \
   /usr/bin/open -W -a "$APP" --stdout "$LOGS/com.clipshare.mac.log" --stderr "$LOGS/com.clipshare.mac.log"
 
-for _ in {1..20}; do curl -fs http://127.0.0.1:8080/healthz >/dev/null && break; sleep 0.5; done
-curl -fs http://127.0.0.1:8080/healthz >/dev/null && echo "✓ Relay healthy on :8080" || echo "✗ Relay not healthy, see $LOGS/com.clipshare.relay.log"
+for _ in {1..20}; do curl -fs "$URL/healthz" >/dev/null && break; sleep 0.5; done
+curl -fs "$URL/healthz" >/dev/null && echo "✓ Relay healthy at $URL" || echo "✗ Relay not reachable at $URL"
 echo "✓ Done. ⌘⇧I = silent screenshot → Android. Logs: $LOGS"
 echo "  First run: allow Screen Recording for ClipboardMac (System Settings → Privacy & Security)."
