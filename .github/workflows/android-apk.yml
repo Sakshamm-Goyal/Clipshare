@@ -17,8 +17,11 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-          cache: gradle
-      - run: chmod +x gradlew && ./gradlew assembleDebug testDebugUnitTest --no-daemon
+      # gradle-wrapper.jar is gitignored, so install Gradle directly.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.12'
+      - run: gradle assembleDebug testDebugUnitTest --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: clipshare-debug-apk
